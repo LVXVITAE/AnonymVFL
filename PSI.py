@@ -75,7 +75,7 @@ class PSICompany(PSIParticipant):
         def compute_R_cI(i,j):
             E_c_i = E_c[i][1]
             r_p_j =r_p[j]
-            E_c_i_plaintext = decrypt(self.phe, E_c_i) # list(map(self.phe.decrypt, E_c_i))
+            E_c_i_plaintext = decrypt(self.phe, E_c_i)
             E_c_i_plaintext = [E_c_ik % out_dom  for E_c_ik in E_c_i_plaintext]
             r_p_j = [r_p_jk % out_dom for r_p_jk in r_p_j]
             
@@ -130,7 +130,7 @@ class PSIPartner(PSIParticipant):
         
         def compute_R_pI(i, E_p_j):
             R_pI_i0 = [(r_c_ik - N_c) % out_dom for r_c_ik in self.r_c[i]]
-            E_p_j_plaintext = decrypt(self.phe, E_p_j) # list(map(self.phe.decrypt, E_p_j))
+            E_p_j_plaintext = decrypt(self.phe, E_p_j)
             R_pI_i1 = [(E_p_jk - N_p) % out_dom for E_p_jk in E_p_j_plaintext]
             R_pI_i = R_pI_i0
             R_pI_i.extend(R_pI_i1)
