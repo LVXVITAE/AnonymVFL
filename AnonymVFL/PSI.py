@@ -1,4 +1,4 @@
-from common import Participant
+from common import  out_dom
 from lightphe import LightPHE
 import numpy as np
 from hashlib import sha512
@@ -8,7 +8,6 @@ from joblib import Parallel, delayed
 import pandas as pd
 from tqdm import tqdm
 
-out_dom = int(2**64)
 keysize = 2048
 precision = 5
 
@@ -24,27 +23,27 @@ def homo_sub(phe: LightPHE, E: list, r: list[int]) -> list:
     r_cipher = encrypt(phe,r)
     return list(map(lambda v1, v2: v1 + -1 * v2, E,r_cipher))
 
-class PSIParticipant(Participant):
-    def __init__(self,raw_data_path:str) -> None:
-        super().__init__(raw_data_path)
+class PSIWorker:
+    def __init__(self,data_path:str) -> None:
+        self.data = pd.read_csv(data_path,header=None)
         self.phe = LightPHE(algorithm_name='Paillier',key_size=keysize,precision=precision)
         self.k = crypto_core_ristretto255_scalar_random()
-        self.num_features = self.raw_data.shape[1] - 1
-        self.num_records = self.raw_data.shape[0]
+        self.num_features = self.data.shape[1] - 1
+        self.num_records = self.data.shape[0]
     def hash_enc_raw(self):
-        def hash_enc_each_row(rd):
-            U_i0 = crypto_core_ristretto255_from_hash(sha512(rd[0].encode()).digest())
+        def hash_enc_each_row(row):
+            U_i0 = crypto_core_ristretto255_from_hash(sha512(row[0].encode()).digest())
 
             U_i0 = crypto_scalarmult_ristretto255(self.k,U_i0)
-            U_c_i1 = encrypt(self.phe,rd[1:])
+            U_c_i1 = encrypt(self.phe,row[1:])
             return (U_i0,U_c_i1)
         print("Hashing keys and encrypting raw data")
-        U = Parallel(n_jobs = -1)(delayed(hash_enc_each_row)(rd) for _, rd in tqdm(self.raw_data.iterrows()))
+        U = Parallel(n_jobs = -1)(delayed(hash_enc_each_row)(row) for _, row in tqdm(self.data.iterrows()))
 
         shuffle(U)
         return U        
 
-class PSICompany(PSIParticipant):
+class PSICompany(PSIWorker):
     def exchange(self):
         self.phe.export_keys(target_file='company_pubkey.json',public=True)
         U_c = self.hash_enc_raw()
@@ -86,18 +85,8 @@ class PSICompany(PSIParticipant):
         R_cI = Parallel(n_jobs=-1)(delayed(compute_R_cI)(i,j) for i,j in tqdm(id_intersection))
         return L, R_cI
             
-            
 
-
-                    
-
-
-
-        
-
-        
-
-class PSIPartner(PSIParticipant):
+class PSIPartner(PSIWorker):
     def exchange(self,U_c):  
         self.peer_num_features = len(U_c[0][1]) 
         self.peer_num_records = len(U_c)
