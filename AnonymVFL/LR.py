@@ -1,3 +1,4 @@
+from matplotlib import legend
 from SharedVariable import SharedVariable
 import numpy as np
 from tqdm import trange
@@ -52,9 +53,13 @@ def train(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_
             if Accracy > max_acc:
                 max_acc = Accracy
         accs.append(Accracy)
-    plt.plot(accs,label = "LR",color="blue")
-    plt.axhline(max_acc, 0, len(accs), label="Max LR",color="blue")
+    plt.plot(accs,label = "LR")
+    plt.axhline(max_acc, 0, len(accs), label="Max LR")
+    plt.xlabel("Iterations")
+    plt.ylabel("Accuracy")
+    plt.legend()
     plt.savefig("LR.png")
+    plt.close()
     return SS_model.w
 
 import pandas as pd

@@ -22,7 +22,7 @@ class SVMSS:
 from sklearn.metrics import accuracy_score
 from tqdm import trange
 import matplotlib.pyplot as plt
-def train(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_iter = 20000) -> SharedVariable:
+def train(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_iter = 5000) -> SharedVariable:
     num_samples, num_features = train_X.shape()
     lambda_ = 0.00001
     SS_model = SVMSS(num_features,lambda_)
@@ -48,11 +48,12 @@ def train(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_
         Accracy = accuracy_score(test_y, y_pred)
         if Accracy > max_acc:
             max_acc = Accracy
-        if t % 100 == 0:
-            accs.append(Accracy)
+        accs.append(Accracy)
 
-    plt.plot(accs,label = "SVM",color="red")
-    plt.axhline(max_acc, 0, len(accs), label="Max SVM",color="red")
+    plt.plot(accs,label = "SVM")
+    plt.axhline(max_acc, 0, len(accs), label="Max SVM")
+    plt.xlabel("Iterations")
+    plt.ylabel("Accuracy")
     plt.legend()
     plt.savefig("SVM.png")
     return SS_model.w
