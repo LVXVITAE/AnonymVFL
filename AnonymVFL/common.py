@@ -13,8 +13,11 @@ class VarCompany(VarOwner):
 class VarPartner(VarOwner):
     pass
 
-def share(x : np.ndarray, share_dom = out_dom):
+def share(x, share_dom = out_dom):
     '''split x into two additive shares'''
-    x_1 = np.random.randint(0, share_dom, x.shape,dtype=np.int64)
+    if isinstance(x, (int,float)):
+        x_1 = np.random.randint(0, share_dom)
+    elif isinstance(x, np.ndarray):
+        x_1 = np.random.randint(0, share_dom, x.shape,dtype=np.int64)
     x_2 = x - x_1
     return x_1, x_2

@@ -2,61 +2,10 @@ import os
 import pandas as pd
 import numpy as np
 import tenseal as ts
-from PSI import *
-from hashlib import sha512
-from time import time
 from common import *
 from LR import LR_test
 from SVM import SVM_test
-def generate_random_data(num_records, num_features):
-    import random,string
-
-    keys = [''.join(random.choices(string.ascii_uppercase +
-                             string.digits, k=20)) for _ in range(num_records)]
-    keys = pd.DataFrame(keys,columns=['key'])
-    data = pd.DataFrame(np.random.randint(0,out_dom,size=(num_records,num_features),dtype=np.uint64))
-    data = pd.concat([keys,data],axis=1)
-    return data
-
-def test_PSI(company_data_path, partner_data_path, INTER_ori):
-    t1 = time()
-    company = PSICompany(company_data_path)
-    partner = PSIPartner(partner_data_path)
-    U_c = company.exchange()
-    E_c, U_p = partner.exchange(U_c)
-    L, R_cI = company.compute_intersection(E_c, U_p)
-    R_pI = partner.output_shares(L)
-    print("PSI time taken: ",time()-t1)
-    R_I = R_cI.copy()
-    INTER_res = set()
-    for i in range(len(R_cI)):
-        H_I = sha512()
-        for j in range(len(R_cI[i])):
-            R_I[i][j] = (R_cI[i][j] + R_pI[i][j]) % out_dom
-            H_I.update(str(R_I[i][j]).encode())
-        INTER_res.add(H_I.hexdigest())
-    print(np.array(R_I))
-    assert INTER_ori == INTER_res, "Intersection is not correct"
-
-def random_PSI_test(scale = 10):
-    intersection = generate_random_data(scale,10)
-    company_data = pd.concat([generate_random_data(scale//2,10),intersection],axis=0).sample(frac=1)
-    partner_data = pd.concat([generate_random_data(scale//2,10),intersection],axis=0).sample(frac=1)
-    company_data_path = os.path.join("example","random_company.csv")
-    partner_data_path = os.path.join("example","random_partner.csv")
-    company_data.to_csv(company_data_path,header=False,index=False)
-    partner_data.to_csv(partner_data_path,header=False,index=False)
-    intersection = pd.merge(company_data,partner_data,how='inner')
-    intersection = intersection.to_numpy()[:,1:]
-    intersection = np.append(intersection,intersection,axis=1)
-    print(intersection)
-    INTER_ori = set()
-    for I in intersection:
-        H_I = sha512()
-        for i in I:
-            H_I.update(str(i).encode())
-        INTER_ori.add(H_I.hexdigest())
-    test_PSI(company_data_path, partner_data_path, INTER_ori)
+from PSI import PSICompany, PSIPartner, random_PSI_test
 
 def secureMM(he : ts.Context, X : np.ndarray, Y : np.ndarray):
     X_enc = ts.ckks_tensor(he, X)
@@ -96,6 +45,46 @@ def LT_test():
         i = np.argwhere(Z != LT).reshape(-1)
         print(X[i].T)
 
+from sklearn.model_selection import train_test_split
+from random import choices
+import string
+def PSI_LR():
+    # data preprocessing
+    data = pd.read_csv(os.path.join("Datasets","pcs.csv"),delimiter=',').astype(np.uint64)
+    train_data, test_data = train_test_split(data)
+    train_data.index = range(train_data.shape[0])
+    keys = [''.join(choices(string.ascii_uppercase +
+                             string.digits, k=20)) for _ in range(train_data.shape[0])]
+    keys = pd.DataFrame(keys,columns=[0])
+    train_data = pd.concat([keys,train_data],axis=1)
+
+
+    train_data.columns = range(train_data.shape[1])
+    labels = train_data.columns.tolist()
+    company_data = train_data.sample(frac=0.9)
+    company_data = company_data[labels[:5]]
+    partner_data = train_data.sample(frac=0.9)
+    partner_data = partner_data[[labels[0]]+labels[5:]]
+
+    company = PSICompany(company_data)
+    partner = PSIPartner(partner_data)
+    U_c = company.exchange()
+    E_c, U_p = partner.exchange(U_c)
+    L, R_cI = company.compute_intersection(E_c, U_p)
+    R_pI = partner.output_shares(L)
+
+    R_cI = np.array(R_cI,dtype=np.int64) - out_dom
+    R_pI = np.array(R_pI,dtype=np.int64)
+
+    train_X = SharedVariable(R_cI[:,:-1],R_pI[:,:-1])
+    train_y = SharedVariable(R_cI[:,-1].reshape(-1,1),R_pI[:,-1].reshape(-1,1))
+    test_X = test_data.to_numpy()[:,:-1]
+    test_y = test_data.to_numpy()[:,-1].reshape(-1,1)
+    from LR import train
+    weight = train(train_X, train_y, test_X, test_y).reveal()
+
+
+
 if __name__ == "__main__":
     # random_PSI_test()
     # LR_test()
@@ -103,5 +92,6 @@ if __name__ == "__main__":
     for _ in range(100):
         mul_test()
         LT_test()
-    LR_test()
-    SVM_test()
+    # LR_test()
+    # SVM_test()
+    # PSI_LR()

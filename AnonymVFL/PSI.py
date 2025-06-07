@@ -8,8 +8,9 @@ from joblib import Parallel, delayed
 import pandas as pd
 from tqdm import tqdm
 
-keysize = 2048
-precision = 5
+from time import time
+
+scheme = 'Paillier'
 
 def encrypt(phe: LightPHE, plaintext: list[int]) -> list:
     cipher = list(map(phe.encrypt, plaintext))
@@ -24,9 +25,9 @@ def homo_sub(phe: LightPHE, E: list, r: list[int]) -> list:
     return list(map(lambda v1, v2: v1 + -1 * v2, E,r_cipher))
 
 class PSIWorker:
-    def __init__(self,data_path:str) -> None:
-        self.data = pd.read_csv(data_path,header=None)
-        self.phe = LightPHE(algorithm_name='Paillier',key_size=keysize,precision=precision)
+    def __init__(self,data : pd.DataFrame)-> None:
+        self.data = data
+        self.phe = LightPHE(algorithm_name=scheme)
         self.k = crypto_core_ristretto255_scalar_random()
         self.num_features = self.data.shape[1] - 1
         self.num_records = self.data.shape[0]
@@ -54,7 +55,7 @@ class PSICompany(PSIWorker):
         
         E_p = [(crypto_scalarmult_ristretto255(self.k,u_p_i[0]),u_p_i[1]) for u_p_i in U_p]
         
-        self.phe_p = LightPHE(algorithm_name='Paillier',key_file='partner_pubkey.json',precision=precision)
+        self.phe_p = LightPHE(algorithm_name=scheme,key_file='partner_pubkey.json')
         company_hash = pd.DataFrame([(ec[0], i) for i, ec in enumerate(E_c)],columns=['hash','i'])
         partner_hash = pd.DataFrame([(ep[0], j) for j, ep in enumerate(E_p)],columns=['hash','j'])
         intersection = pd.merge(company_hash,partner_hash,how='inner',on='hash')
@@ -83,7 +84,7 @@ class PSICompany(PSIWorker):
             return R_cI_i     
         print("Computing company shares")  
         R_cI = Parallel(n_jobs=-1)(delayed(compute_R_cI)(i,j) for i,j in tqdm(id_intersection))
-        return L, R_cI
+        return L, np.array(R_cI)
             
 
 class PSIPartner(PSIWorker):
@@ -93,7 +94,7 @@ class PSIPartner(PSIWorker):
         self.phe.export_keys(target_file='partner_pubkey.json',public=True)
         U_p = self.hash_enc_raw()
 
-        self.phe_c = LightPHE(algorithm_name='Paillier',key_file='company_pubkey.json',precision=precision)
+        self.phe_c = LightPHE(algorithm_name=scheme,key_file='company_pubkey.json')
 
         
         N_c = self.phe_c.cs.plaintext_modulo
@@ -126,4 +127,54 @@ class PSIPartner(PSIWorker):
             return R_pI_i
         print("Computing partner shares")
         R_pI = Parallel(n_jobs=-1)(delayed(compute_R_pI)(i, E_p_j)for i, E_p_j in tqdm(L))
-        return R_pI
+        return np.array(R_pI)
+
+
+def generate_random_data(num_records, num_features):
+    import random,string
+
+    keys = [''.join(random.choices(string.ascii_uppercase +
+                             string.digits, k=20)) for _ in range(num_records)]
+    keys = pd.DataFrame(keys,columns=['0'])
+    data = pd.DataFrame(np.random.randint(0,100,size=(num_records,num_features),dtype=np.uint64))
+    data = pd.concat([keys,data],axis=1)
+    data.columns = range(data.shape[1])
+    return data
+
+def test_PSI(company_data, partner_data, INTER_ori):
+    t1 = time()
+    company = PSICompany(company_data)
+    partner = PSIPartner(partner_data)
+    U_c = company.exchange()
+    E_c, U_p = partner.exchange(U_c)
+    L, R_cI = company.compute_intersection(E_c, U_p)
+    R_pI = partner.output_shares(L)
+    print("PSI time taken: ",time()-t1)
+    R_I = (R_cI + R_pI) % out_dom
+    INTER_res = set()
+    for R_I_i in R_I:
+        H_I = sha512()
+        for R_I_ij in R_I_i:
+            H_I.update(str(R_I_ij).encode())
+        INTER_res.add(H_I.hexdigest())
+    print(np.array(R_I))
+    assert INTER_ori == INTER_res, "Intersection is not correct"
+
+def random_PSI_test(scale = 100):
+    intersection = generate_random_data(scale,100)
+    company_data = pd.concat([generate_random_data(scale//2,100),intersection],axis=0).sample(frac=1)
+    partner_data = pd.concat([generate_random_data(scale//2,100),intersection],axis=0).sample(frac=1)
+    intersection = pd.merge(company_data,partner_data,how='inner')
+    intersection = intersection.to_numpy()[:,1:]
+    intersection = np.append(intersection,intersection,axis=1)
+    print(intersection)
+    INTER_ori = set()
+    for I in intersection:
+        H_I = sha512()
+        for i in I:
+            H_I.update(str(i).encode())
+        INTER_ori.add(H_I.hexdigest())
+    test_PSI(company_data, partner_data, INTER_ori)
+
+if __name__ == "__main__":
+    random_PSI_test()

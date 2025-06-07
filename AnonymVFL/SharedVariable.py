@@ -1,5 +1,5 @@
 import numpy as np
-from common import VarCompany, VarPartner, share, out_dom
+from common import VarCompany, VarOwner, VarPartner, share, out_dom
 
 def is_constant(x):
     return isinstance(x, (int, float, np.ndarray))
@@ -8,25 +8,34 @@ def is_scalar(x):
     return isinstance(x, (int, float))
 
 class PrivateData:
-    def __init__(self, value : np.ndarray, owner):
+    def __init__(self, value, owner):
         self.value = value
         self.owner = owner
+        self.value_type = type(value)
 
     def shape(self):
-        return self.value.shape  
+        if is_scalar(self.value):
+            return (1,1)
+        elif isinstance(self.value, np.ndarray):
+            return self.value.shape  
+
+    def transpose(self):
+        if is_scalar(self.value):
+            return self.__class__(self.value, self.owner)
+        if isinstance(self.value, np.ndarray):
+            return self.__class__(self.value.T, self.owner)
+        else:
+            raise ValueError("Cannot transpose a non-array value")
 
     def __getitem__(self, key):
-        return self.__class__(self.value[key], self.owner)  
-    
+        return self.__class__(self.value[key], self.owner)
+
     def __setitem__(self, key, val):
         assert isinstance(val, self.__class__), "Assigned value must be the same type"
         if self.owner == val.owner:
             self.value[key] = val.value
         else:
             raise ValueError("Owner mismatch")
-    
-    def send(self, receiver):
-        return self.__class__(self.value, receiver)
     
     def __add__(self, other):
         assert isinstance(other, self.__class__), "Operands must be the same type"
@@ -91,7 +100,6 @@ class SharedVariable:
 
         assert share0.shape() == share1.shape(), "Shape mismatch"
 
-        self.num_features = share0.shape()[1]
         # Ensure that share0 is from company and share1 is from partner
         if share0.owner == company and share1.owner == partner:
             self.share0 = share0
@@ -124,7 +132,6 @@ class SharedVariable:
         return self.share0.shape()
     
     def reveal(self) -> np.ndarray:
-        self.share1.send(self.company)
         return self.share0.value + self.share1.value
     
     def transpose(self) -> 'SharedVariable':
@@ -151,7 +158,10 @@ class SharedVariable:
         assert isinstance(val, SharedVariable), "Assigned value must be a SharedVariable"
         self.share0.__setitem__(key, val.share0)
         self.share1.__setitem__(key, val.share1)
-        
+
+    def send(self, obj : Share, to : VarOwner) -> None:
+        return Share(obj.value, to)
+    
     def __add__(self, other) -> 'SharedVariable':
         if is_constant(other):
             other = self.constant_conversion(other)
@@ -190,13 +200,13 @@ class SharedVariable:
 
         D0 = self.share0 - U0
         E0 = other.share0 - V0
-        D0_ = D0.send(self.partner)
-        E0_ = E0.send(self.partner)
+        D0_ = self.send(D0, self.partner)
+        E0_ = self.send(E0, self.partner)
 
         D1 = self.share1 - U1
         E1 = other.share1 - V1
-        D1_ = D1.send(self.company)
-        E1_ = E1.send(self.company)
+        D1_ = self.send(D1, self.company)
+        E1_ = self.send(E1, self.company)
 
         D = D0 + D1_
         E = E0 + E1_
@@ -266,8 +276,8 @@ class SharedVariable:
 
         s0, s1 = s.share0, s.share1
         h0, h1 = h.share0, h.share1
-        s1 = s1.send(self.company)
-        h1 = h1.send(self.company)
+        s1 = self.send(s1, self.company)
+        h1 = self.send(h1, self.company)
         s = self.company.reconstruct(self.company,s0, s1)
         h = self.company.reconstruct(self.company,h0, h1)
         return s, h
