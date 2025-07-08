@@ -1,19 +1,6 @@
 import os
-import pandas as pd
 import numpy as np
-import tenseal as ts
 from common import *
-from LR import LR_test
-from SVM import SVM_test
-from PSI import PSICompany, PSIPartner, random_PSI_test
-
-def secureMM(he : ts.Context, X : np.ndarray, Y : np.ndarray):
-    X_enc = ts.ckks_tensor(he, X)
-    Z1 = np.random.randint(0, out_dom, (X.shape[0],Y.shape[1]),dtype=np.int64)
-    Z0 = X_enc @ Y - Z1
-    Z0 = np.array(Z0.decrypt().tolist())
-    assert np.allclose(X @ Y, Z0 + Z1), "Secure matrix multiplication failed!"
-    return Z0, Z1
 
 from SharedVariable import SharedVariable
 
@@ -45,10 +32,13 @@ def LT_test():
         i = np.argwhere(Z != LT).reshape(-1)
         print(X[i].T)
 
-from sklearn.model_selection import train_test_split
-from random import choices
-import string
+
 def PSI_LR():
+    from sklearn.model_selection import train_test_split
+    from random import choices
+    import string    
+    import pandas as pd
+    from PSI import PSICompany, PSIPartner
     # data preprocessing
     data = pd.read_csv(os.path.join("Datasets","pcs.csv"),delimiter=',').astype(np.uint64)
     train_data, test_data = train_test_split(data)
@@ -83,15 +73,44 @@ def PSI_LR():
     from LR import train
     weight = train(train_X, train_y, test_X, test_y).reveal()
 
+def sf_test():
+    import secretflow as sf
+    import jax.numpy as jnp
+
+    sf.init(['company', 'partner', 'coordinator'], address='local')
+    aby3_config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
+    spu_device = sf.SPU(aby3_config)
+    company, partner, coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
+    X = 0.001*np.random.rand(10,10)
+    # X = np.zeros((10,10),dtype=np.float64)
+    Y = np.random.randint(0, 1000, (10,10), dtype=np.int64)
+    Y.astype(np.float64)
+    XY = X @ Y
+
+    X = jnp.array(X)
+    Y = jnp.array(Y)
+    XY = jnp.array(XY)
+    LT = X < Y
+    print(XY)
+    print(LT)
+
+    X = sf.to(company, X).to(spu_device)
+    Y = sf.to(partner, Y).to(spu_device)
+    def matmul(x, y):
+        return x @ y
+    def LT(x, y):
+        return x < y
+    # Z = spu_device(matmul)(X, Y).to(coordinator)
+    Z = spu_device(LT)(X, Y).to(coordinator)
+    Z = sf.reveal(Z)
+    print(Z)
 
 
 if __name__ == "__main__":
     # random_PSI_test()
     # LR_test()
     # random_mul_test()
-    for _ in range(100):
-        mul_test()
-        LT_test()
     # LR_test()
     # SVM_test()
     # PSI_LR()
+    sf_test()

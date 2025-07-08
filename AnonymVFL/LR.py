@@ -1,7 +1,7 @@
-from matplotlib import lines
+import test
 from SharedVariable import SharedVariable
 import numpy as np
-from tqdm import trange
+from tqdm import trange, tqdm
 from common import out_dom
 class LRSS:
     def __init__(self, in_features, out_features = 1, lambda_ = 0):
@@ -35,6 +35,40 @@ class LRSS:
         diff = y_pred - y
         self.w = (1 - self.lambda_) * self.w - (lr/batch_size) * (X.transpose() @ diff)
 
+
+import secretflow as sf
+
+sf.init(['company', 'partner', 'coordinator'], address='local')
+aby3_config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
+spu = sf.SPU(aby3_config)
+company, partner, coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
+import jax.numpy as jnp
+
+class SSLR:
+    def __init__(self, in_features, out_features = 1, lambda_ = 0):
+        self.out_features = out_features
+        self.w = spu(jnp.zeros)((in_features, out_features))
+        self.lambda_ = lambda_
+
+    def forward(self, X):
+        def fw(X, w):
+            return jnp.clip(X @ w + 1/2, 0, 1)
+        return spu(fw)(X, self.w)
+
+    def predict(self, X):
+        y = self.forward(X)
+        y = sf.reveal(y)
+        if self.out_features == 1:
+            return y.round().reshape(-1,1)
+        else:
+            return y.argmax(axis=1).reshape(-1,1)
+
+    def backward(self, X, y, y_pred, lr = 0.1):
+        def grad_desc(lambda_, w, X, y_pred, y):
+            batch_size = X.shape[0]
+            diff = y_pred - y
+            return (1 - lambda_) * w - (lr/batch_size) * (X.transpose() @ diff)
+        self.w = spu(grad_desc)(self.lambda_, self.w, X, y_pred, y)
 
 
 class LR:
@@ -77,8 +111,8 @@ class LR:
                 X_batch = X[j:j+batch]
                 y_batch = y[j:j+batch]
 
-                y_pred = self.forward(X_batch)
-                self.backward(X_batch, y_batch, y_pred, lr = 0.1 / t)
+                y_pred = spu(self.forward)(X_batch)
+                spu(self.backward)(X_batch, y_batch, y_pred, lr = 0.1 / t)
 
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
@@ -158,7 +192,6 @@ import os
 def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
     if dataset == "pima" or dataset == "lbw" or dataset == "pcs" or dataset == "uis":
         data = pd.read_csv(os.path.join("Datasets",f"{dataset}.csv")).to_numpy()
-        data = pd.read_csv(os.path.join("Datasets",f"{dataset}.csv")).to_numpy()
         train_data, test_data = train_test_split(data,shuffle=False)
         train_X = train_data[:,:-1]
         train_y = train_data[:,-1].reshape(-1,1)
@@ -186,6 +219,24 @@ def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.nda
         from sklearn.preprocessing import OneHotEncoder
         train_y = OneHotEncoder().fit_transform(train_y).toarray()
         test_y = test_y.astype(int).reshape(-1,1)
+    
+    elif dataset == "risk":
+        dir_path = os.path.join("Datasets", "data", "data")
+        train = pd.read_csv(os.path.join(dir_path, "risk_assessment_all.csv"))
+        test = pd.read_csv(os.path.join(dir_path, "risk_assessment_all_test.csv"))
+        train_X = train.drop(columns=["id","y"]).to_numpy()
+        train_y = train["y"].to_numpy().reshape(-1,1)
+        test_X = test.drop(columns=["id","y"]).to_numpy()
+        test_y = test["y"].to_numpy().reshape(-1,1)
+
+    elif dataset == "breast":
+        dir_path = os.path.join("Datasets", "data", "data")
+        guest = pd.read_csv(os.path.join(dir_path, "breast_hetero_guest.csv"))
+        host = pd.read_csv(os.path.join(dir_path, "breast_hetero_host.csv"))
+        all = pd.concat([host, guest], join = 'inner', axis = 1)
+        X = all.drop(columns=["id", "y"]).to_numpy()
+        y = all["y"].to_numpy().reshape(-1,1)
+        train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
 
     return train_X, train_y, test_X, test_y
 
@@ -199,7 +250,67 @@ def LR_test(dataset):
     plt.savefig(f"LR_{dataset}.png")
     plt.close()
 
+def SSLR_test(dataset):
+    train_X, train_y, test_X, test_y = load_dataset(dataset)
+    test_X = jnp.array(test_X)
+    test_X = sf.to(company, test_X).to(spu)
+    model = SSLR(train_X.shape[1], train_y.shape[1])
+    num_samples = train_X.shape[0]
+    num_cat = train_y.shape[1]
+
+    batch_size = 1024
+    Xs = []
+    ys = []
+    for j in trange(0,num_samples,batch_size):
+        batch = min(batch_size,num_samples - j)
+        X_batch = jnp.array(train_X[j:j+batch])
+        X_batch = sf.to(company, X_batch).to(spu)
+        y_batch = jnp.array(train_y[j:j+batch])
+        y_batch = sf.to(company, y_batch).to(spu)
+        Xs.append(X_batch)
+        ys.append(y_batch)
+    
+    n_iter = 20
+    accs = []
+    max_acc = 0
+    for t in range(1,n_iter + 1):
+        print(f"Epoch {t}")
+        for X,y in tqdm(zip(Xs, ys)):
+            y_pred = model.forward(X)
+            model.backward(X, y, y_pred, 0.1 / t)
+
+        y_pred = model.predict(test_X)
+        Accracy = accuracy_score(test_y, y_pred)
+        if Accracy > max_acc:
+            max_acc = Accracy
+            print(f"Iteration {t}, Accuracy: {Accracy:.4f}")
+        accs.append(Accracy)
+
+    plt.plot(accs,label = "SSLR",color = "blue")
+
+    test_X = sf.reveal(test_X)
+
+    from sklearn.linear_model import LogisticRegression
+    model = LogisticRegression(max_iter = n_iter,penalty=None)
+
+    if num_cat > 1:
+        train_y = train_y.argmax(axis=1)
+
+    model.fit(train_X,train_y.ravel())
+    y_pred = model.predict(test_X)
+    Accracy = accuracy_score(test_y, y_pred)
+    plt.axhline(Accracy, 0, len(accs), label="LR sklearn", color = "red",linestyle = "--")
+
+    plt.xlabel("nIter")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.title(f"SSLR_{dataset}")
+    plt.savefig(f"SSLR_{dataset}.png")
+    plt.close()
+
 if __name__ == "__main__":
-    LR_test("mnist")
-    for dataset in ["pima","pcs","uis","gisette","arcene"]:
-        LR_test(dataset)
+    # LR_test("mnist")
+    # for dataset in ["pima","pcs","uis","gisette","arcene"]:
+    #     LR_test(dataset)
+    SSLR_test("breast")
+    SSLR_test("risk")

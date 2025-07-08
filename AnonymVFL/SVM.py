@@ -1,4 +1,3 @@
-from pyparsing import line
 from SharedVariable import SharedVariable
 import numpy as np
 from common import out_dom
