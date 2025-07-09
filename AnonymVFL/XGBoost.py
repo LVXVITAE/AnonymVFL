@@ -364,7 +364,7 @@ class Tree:
         return spu(ret)(w).to(company)
 
 class SSXGBoost:
-    def __init__(self,in_features, split_index : int | list[int], out_features = 1, n_estimators = 3, lambda_ = 1e-5, max_depth = 3, div = False):
+    def __init__(self,in_features, split_index : int | list[int], out_features = 1, n_estimators = 5, lambda_ = 1e-5, max_depth = 5, div = False):
         self.trees : list[Tree] = []
         self.in_features = in_features
         self.out_features = out_features
@@ -408,61 +408,9 @@ class SSXGBoost:
             y_pred = company(jnp.add)(y_pred, y_t)
             self.trees.append(tree)
 
-import pandas as pd
-from sklearn.model_selection import train_test_split
-import os
 import numpy as np
 from sklearn.metrics import accuracy_score
-def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
-    if dataset == "pima" or dataset == "lbw" or dataset == "pcs" or dataset == "uis":
-        data = pd.read_csv(os.path.join("Datasets",f"{dataset}.csv")).to_numpy()
-        train_data, test_data = train_test_split(data,shuffle=False)
-        train_X = train_data[:,:-1]
-        train_y = train_data[:,-1].reshape(-1,1)
-        test_X = test_data[:,:-1]
-        test_y = test_data[:,-1].reshape(-1,1)
-
-    elif dataset == "gisette" or dataset == "arcene":
-        folder = os.path.join("Datasets",dataset)
-        train_X = np.loadtxt(os.path.join(folder,f"{dataset}_train.data"))
-        train_y = np.loadtxt(os.path.join(folder,f"{dataset}_train.labels"))
-        train_y[train_y == -1] = 0
-        train_y = train_y.reshape(-1,1)
-        test_X = np.loadtxt(os.path.join(folder,f"{dataset}_valid.data"))
-        test_y = np.loadtxt(os.path.join(folder,f"{dataset}_valid.labels"))
-        test_y[test_y == -1] = 0
-        test_y = test_y.reshape(-1,1)
-
-    elif dataset == "mnist":
-        from sklearn.datasets import fetch_openml
-        mnist = fetch_openml('mnist_784', version=1,as_frame=False)
-        X = mnist.data
-        y = mnist.target
-        train_X, test_X, train_y, test_y = train_test_split(X, y,shuffle=False)
-        train_y = train_y.astype(int).reshape(-1,1)
-        from sklearn.preprocessing import OneHotEncoder
-        train_y = OneHotEncoder().fit_transform(train_y).toarray()
-        test_y = test_y.astype(int).reshape(-1,1)
-    
-    elif dataset == "risk":
-        dir_path = os.path.join("Datasets", "data", "data")
-        train = pd.read_csv(os.path.join(dir_path, "risk_assessment_all.csv"))
-        test = pd.read_csv(os.path.join(dir_path, "risk_assessment_all_test.csv"))
-        train_X = train.drop(columns=["id","y"]).to_numpy()
-        train_y = train["y"].to_numpy().reshape(-1,1)
-        test_X = test.drop(columns=["id","y"]).to_numpy()
-        test_y = test["y"].to_numpy().reshape(-1,1)
-
-    elif dataset == "breast":
-        dir_path = os.path.join("Datasets", "data", "data")
-        guest = pd.read_csv(os.path.join(dir_path, "breast_hetero_guest.csv"))
-        host = pd.read_csv(os.path.join(dir_path, "breast_hetero_host.csv"))
-        all = pd.concat([host, guest], join = 'inner', axis = 1)
-        X = all.drop(columns=["id", "y"]).to_numpy()
-        y = all["y"].to_numpy().reshape(-1,1)
-        train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
-
-    return train_X, train_y, test_X, test_y
+from common import load_dataset
 
 def SSXGBoost_test(dataset):
     train_X, train_y, test_X, test_y = load_dataset(dataset)
