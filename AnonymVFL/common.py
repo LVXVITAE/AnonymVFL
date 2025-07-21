@@ -3,7 +3,11 @@ import jax.numpy as jnp
 import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
+import secretflow as sf
 out_dom = int(2**16)
+
+project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 class VarOwner:
     def __init__(self):
         pass
@@ -17,6 +21,7 @@ class VarCompany(VarOwner):
 class VarPartner(VarOwner):
     pass
 
+# 前期测试用，可忽略
 def share(x, share_dom = out_dom):
     '''split x into two additive shares'''
     if isinstance(x, (int,float)):
@@ -47,51 +52,51 @@ def cross_entropy(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
 
 class SigmoidCrossEntropy:
     @staticmethod
-    def loss(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
+    def loss(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
         """
         Computes the sigmoid cross-entropy loss.
         """
-        y_pred = sigmoid(y_pred)
+        y_pred = sigmoid(z)
         return cross_entropy(y_true, y_pred)
     
     @staticmethod
-    def grad(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
+    def grad(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
         """
         Computes the gradient of the sigmoid cross-entropy loss.
         """
-        y_pred = sigmoid(y_pred)
+        y_pred = sigmoid(z)
         return y_pred - y_true
     @staticmethod
-    def hess(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
+    def hess(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
         """
         Computes the hessian of the sigmoid cross-entropy loss.
         """
-        y_pred = sigmoid(y_pred)
+        y_pred = sigmoid(z)
         return y_pred * (1 - y_pred)
 
 class SoftmaxCrossEntropy:
     @staticmethod
-    def loss(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
+    def loss(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
         """
         Computes the softmax cross-entropy loss.
         """
-        y_pred = softmax(y_pred)
+        y_pred = softmax(z)
         return cross_entropy(y_true, y_pred)
     
     @staticmethod
-    def grad(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
+    def grad(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
         """
         Computes the gradient of the softmax cross-entropy loss.
         """
-        y_pred = softmax(y_pred)
+        y_pred = softmax(z)
         return y_pred - y_true
     
     @staticmethod
-    def hess(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
+    def hess(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
         """
         Computes the hessian of the softmax cross-entropy loss.
         """
-        y_pred = softmax(y_pred)
+        y_pred = softmax(z)
         return y_pred * (1 - y_pred)
     
 class MeanSquare:
@@ -116,7 +121,11 @@ class MeanSquare:
         """
         return 2 / y_true.shape[0]
     
+# 加载数据集，开发测试用
 def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
+    """
+    实现了训练测试集划分以及标签（y）01/独热编码
+    """
     if dataset == "pima" or dataset == "lbw" or dataset == "pcs" or dataset == "uis":
         data = pd.read_csv(os.path.join("Datasets",f"{dataset}.csv")).to_numpy()
         train_data, test_data = train_test_split(data,shuffle=False)
@@ -166,3 +175,34 @@ def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.nda
         train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
 
     return train_X, train_y, test_X, test_y
+
+def Singleton(cls):   #这是一个函数，目的是要实现一个“装饰器”，而且是对类型的装饰器
+    '''
+    cls:表示一个类名，即所要设计的单例类名称，
+        因为python一切皆对象，故而类名同样可以作为参数传递
+    '''
+    instance = {}
+ 
+    def singleton(*args, **kargs):
+        if cls not in instance:
+            instance[cls] = cls(*args, **kargs)#如果没有cls这个类，则创建，并且将这个cls所创建的实例，保存在一个字典中
+        return instance[cls]
+ 
+    return singleton
+
+@Singleton
+class MPCInitializer:
+    """
+    初始化secretflow的SPU和PYU环境
+    这里添加一个装饰器以实现单例模式
+    目前仅支持仿真模式
+    根据secretflow的文档，仅修改此处的初始化方式而几乎无需改动其他源码即可实现分布式部署
+    """
+    def __init__(self, mode = 'simulation'):
+        if mode == 'simulation':
+            sf.init(['company', 'partner', 'coordinator'],
+            address='local',
+            )
+            self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
+            self.spu = sf.SPU(self.config)
+            self.company, self.partner, self.coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')

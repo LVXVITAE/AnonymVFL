@@ -1,8 +1,8 @@
-import test
 from SharedVariable import SharedVariable
 import numpy as np
 from tqdm import trange, tqdm
 from common import out_dom
+import jax.numpy as jnp
 class LRSS:
     def __init__(self, in_features, out_features = 1, lambda_ = 0):
         self.out_features = out_features
@@ -38,32 +38,47 @@ class LRSS:
 
 import secretflow as sf
 
-sf.init(['company', 'partner', 'coordinator'], address='local')
-aby3_config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
-spu = sf.SPU(aby3_config)
-company, partner, coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
-import jax.numpy as jnp
+from common import MPCInitializer, sigmoid, softmax
+
+mpc_init = MPCInitializer()
+company, partner, coordinator, spu = mpc_init.company, mpc_init.partner, mpc_init.coordinator, mpc_init.spu
+
+label_holder = company
 
 class SSLR:
-    def __init__(self, in_features, out_features = 1, lambda_ = 0):
+    def __init__(self, in_features, out_features = 1, lambda_ = 0, approx = True):
         self.out_features = out_features
-        self.w = spu(jnp.zeros)((in_features, out_features))
+        self.w = label_holder(jnp.zeros)((in_features, out_features), dtype=jnp.float32).to(spu)
         self.lambda_ = lambda_
+        self.approx = approx
 
     def forward(self, X):
-        def fw(X, w):
-            return jnp.clip(X @ w + 1/2, 0, 1)
-        return spu(fw)(X, self.w)
+        if self.approx:
+            def fw(X, w):
+                return jnp.clip(X @ w + 1/2, 0, 1)
+            return spu(fw)(X, self.w)
+        else:
+            z = spu(jnp.matmul)(X, self.w)
+            z = sf.to(label_holder, z)
+            if self.out_features == 1:
+                return label_holder(sigmoid)(z)
+            else:
+                return label_holder(softmax)(z)
 
     def predict(self, X):
         y = self.forward(X)
-        y = sf.reveal(y)
+        y = y.to(label_holder)
         if self.out_features == 1:
-            return y.round().reshape(-1,1)
+            y = label_holder(jnp.round)(y)
         else:
-            return y.argmax(axis=1).reshape(-1,1)
+            y = label_holder(jnp.argmax)(y, axis=1)
+
+        return sf.reveal(y).reshape(-1, 1)
 
     def backward(self, X, y, y_pred, lr = 0.1):
+        if not self.approx:
+            y = y.to(spu)
+            y_pred = y_pred.to(spu)
         def grad_desc(lambda_, w, X, y_pred, y):
             batch_size = X.shape[0]
             diff = y_pred - y
@@ -76,6 +91,14 @@ class SSLR:
             for X,y in tqdm(zip(Xs, ys)):
                 y_pred = self.forward(X)
                 self.backward(X, y, y_pred, lr / t)
+
+    def save(self, path):
+        # TODO
+        raise NotImplementedError("Save method not implemented for SSLR")
+    
+    def load(self, path):
+        # TODO
+        raise NotImplementedError("Load method not implemented for SSLR")
 
 
 class LR:

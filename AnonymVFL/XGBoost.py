@@ -1,4 +1,4 @@
-from re import S
+from cProfile import label
 import secretflow as sf
 import jax.numpy as jnp
 from common import sigmoid, SigmoidCrossEntropy, SoftmaxCrossEntropy
@@ -7,14 +7,11 @@ from secretflow.device.device import SPUObject, PYUObject
 from secretflow.data import FedNdarray
 from secretflow.data.ndarray import load, PartitionWay
 from tqdm import tqdm
+from common import MPCInitializer
 
-sf.init(['company', 'partner', 'coordinator'],
-        address='local',
-        )
-aby3_config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
-spu = sf.SPU(aby3_config)
-company, partner, coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
-
+mpc_init = MPCInitializer()
+company, partner, coordinator, spu = mpc_init.company, mpc_init.partner, mpc_init.coordinator, mpc_init.spu
+label_holder = company
 class TreeNode:
     def __init__(self, left, right, threshold):
         self.left = left
@@ -38,8 +35,8 @@ class Tree:
     def fit(self, X : SPUObject, y : PYUObject, y_pred : PYUObject, buckets : list[list[jnp.ndarray]], SSQuantiles : SPUObject, FedQuantiles : FedNdarray):
         """
         X: Secretly shared input features (in spu)
-        y: Plaintext labels at company (in company)
-        y_pred: Predicted labels at company (in company)
+        y: Plaintext labels at label_holder (in label_holder)
+        y_pred: Predicted labels at label_holder (in label_holder)
         buckets: List of buckets for each feature (Public).
         """
         self.SSQuantiles = SSQuantiles
@@ -55,7 +52,7 @@ class Tree:
             g = loss_fn.grad(y, y_pred)
             h = loss_fn.hess(y, y_pred)
             return g, h
-        g, h = company(grad_hessian, num_returns=2)(y, y_pred, loss_fn)
+        g, h = label_holder(grad_hessian, num_returns=2)(y, y_pred, loss_fn)
         g = g.to(spu)
         h = h.to(spu)
         self.root = self.build_tree(g, h, s, 0)
@@ -139,8 +136,8 @@ class Tree:
             
             s_L = jnp.astype(s_L, jnp.int32)
             s_R = 1 - s_L
-            s_L = sf.to(company, s_L).to(spu)
-            s_R = sf.to(company, s_R).to(spu)
+            s_L = sf.to(label_holder, s_L).to(spu)
+            s_R = sf.to(label_holder, s_R).to(spu)
 
             def subtree_args(g : jnp.ndarray, h : jnp.ndarray, s : jnp.ndarray, s_L : jnp.ndarray, s_R : jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
                 s_L *= s
@@ -298,14 +295,14 @@ class Tree:
                 return X[:, j] <= Quantiles[j, k]
             
             if mode == 'eval':
-                assert isinstance(X, FedNdarray), "X must be a FedNdarray in evaluation mode."
+                
                 num_samples = X.shape[0]
                 if num_samples == 0:
                     return []
                 if isinstance(cur, Leaf):
                     return [cur.num] * num_samples
                 elif isinstance(cur, TreeNode):
-                    assert isinstance(X, FedNdarray), "X must be a FedNdarray in evaluation mode."
+                    
                     j, k = cur.threshold
                     if j < self.split_index:
                         X_c = X.partitions[company]
@@ -361,10 +358,10 @@ class Tree:
         w = [self.leaf_weights[leaf_id] for leaf_id in leaves_ids]
         def ret(w : list[jnp.ndarray]):
             return jnp.array(w, dtype=jnp.float32).reshape(-1,1)
-        return spu(ret)(w).to(company)
+        return spu(ret)(w).to(label_holder)
 
 class SSXGBoost:
-    def __init__(self,in_features, split_index : int | list[int], out_features = 1, n_estimators = 5, lambda_ = 1e-5, max_depth = 5, div = False):
+    def __init__(self,in_features, split_index : int | list[int], out_features = 1, n_estimators = 5, lambda_ = 1e-5, max_depth = 3, div = False):
         self.trees : list[Tree] = []
         self.in_features = in_features
         self.out_features = out_features
@@ -377,7 +374,7 @@ class SSXGBoost:
     def forward(self, X : FedNdarray | SPUObject):
         preds = 0
         for m in self.trees:
-            preds = company(jnp.add)(preds, m.forward(X))
+            preds = label_holder(jnp.add)(preds, m.forward(X))
         return preds
 
     def predict(self, X : FedNdarray):
@@ -392,37 +389,32 @@ class SSXGBoost:
     def fit(self, X : SPUObject, y : PYUObject, buckets : list[list[jnp.ndarray]], SSQuantiles : SPUObject, FedQuantiles : FedNdarray):
         """
         X: Secretly shared input features (in spu)
-        y: Plaintext labels at company (in company)
+        y: Plaintext labels at label_holder (in label_holder)
         buckets: List of buckets for each feature (public).
         Quantiles: List of quantiles for each feature (horizontally partitioned).
         """
         self.SSQuantiles = SSQuantiles
         self.FedQuantiles = FedQuantiles
 
-        y_pred = company(jnp.zeros_like)(y)
+        y_pred = label_holder(jnp.zeros_like)(y)
         for _ in range(self.n_estimators):
             tree = Tree(self.in_features, self.split_index, self.out_features, self.lambda_, self.max_depth, self.div)
             tree.fit(X, y, y_pred, buckets, self.SSQuantiles, self.FedQuantiles)
 
             y_t = tree.forward(X)
-            y_pred = company(jnp.add)(y_pred, y_t)
+            y_pred = label_holder(jnp.add)(y_pred, y_t)
             self.trees.append(tree)
 
 import numpy as np
 from sklearn.metrics import accuracy_score
 from common import load_dataset
-
-def SSXGBoost_test(dataset):
-    train_X, train_y, test_X, test_y = load_dataset(dataset)
-
-
-    # 将 train_X 每列等频分桶为 k+1 份，并计算 k 个分位点
-    split_index = train_X.shape[1] // 2
-    k = 63   # 把每列分成 k+1 份，所以要算 k 个分位点
+def quantize_buckets(X : np.ndarray, k : int = 50) -> tuple[np.ndarray, list[list[jnp.ndarray]], np.ndarray]:
     buckets, Quantiles = [], []
 
-    for j in range(train_X.shape[1]):
-        col = train_X[:, j]
+    label_matrix = np.zeros(X.shape, dtype=int)
+
+    for j in range(X.shape[1]):
+        col = X[:, j]
         # 1) 计算分位点
         qs = np.quantile(col, [(i + 1) / (k + 1) for i in range(k)]).round(3)
         Quantiles_j = []
@@ -434,25 +426,52 @@ def SSXGBoost_test(dataset):
             # 计算每个分位点对应的索引范围
             indices = jnp.where((col > left) & (col <= right))[0]
             if len(indices) > 0:
+                indices = indices.sort()
                 Quantiles_j.append(right)
-                buckets_j.append(indices.sort())
+                buckets_j.append(indices)
+                label_matrix[indices, j] = i
             left = right
             right = float('inf') if i == len(qs) - 1 else qs[i + 1]
         # 3) 最后一个分位点对应的索引范围
         indices = jnp.where(col > left)[0]
         if len(indices) > 0:
-            buckets_j.append(indices.sort())
+            indices = indices.sort()
+            buckets_j.append(indices)
+            label_matrix[indices, j] = k
 
         Quantiles.append(Quantiles_j)
         buckets.append([g for g in buckets_j])
 
     Quantiles = np.array(Quantiles)
+    return Quantiles, buckets, label_matrix
 
-    
-    Quantiles1, Quantiles2 = Quantiles[:split_index], Quantiles[split_index:]
+def recover_buckets(label_matrix : np.ndarray) -> list[list[jnp.ndarray]]:
+    buckets = []
+    label_matrix = label_matrix.T
+    for label_j in label_matrix:
+        buckets_j = []
+        k = max(label_j)
+        for i in range(k+1):
+            items_in_buckets = jnp.where(label_j==k)[0]
+            buckets_j.append(items_in_buckets)
+        buckets.append(buckets_j)
+    return buckets
+
+def SSXGBoost_test(dataset):
+    train_X, train_y, test_X, test_y = load_dataset(dataset)
+
+
+    # 将 train_X 每列等频分桶为 k+1 份，并计算 k 个分位点
+    split_index = train_X.shape[1] // 2
+    Quantiles1, _, buckets_labels1 = quantize_buckets(train_X[:, :split_index], k=50)
+    Quantiles2, _, buckets_labels2 = quantize_buckets(train_X[:, split_index:], k=50)
+    buckets1 = recover_buckets(buckets_labels1)
+    buckets2 = recover_buckets(buckets_labels2)
     np.save("Quantiles1.npy", Quantiles1)
     np.save("Quantiles2.npy", Quantiles2)
-    SSQuantiles = sf.to(company, jnp.array(Quantiles)).to(spu)
+    Quantiles = np.concatenate((Quantiles1, Quantiles2), axis=0)
+    buckets = buckets1 + buckets2
+    SSQuantiles = sf.to(label_holder, jnp.array(Quantiles)).to(spu)
     FedQuantiles = load({company: "Quantiles1.npy", partner: "Quantiles2.npy"}, partition_way=PartitionWay.HORIZONTAL)
 
     model = SSXGBoost(train_X.shape[1], split_index, out_features= train_y.shape[1])
@@ -492,5 +511,10 @@ def SSXGBoost_test(dataset):
     # Accuracy = accuracy_score(test_y, y_pred)
     # print(f"Accuracy of XGBoost on {dataset} dataset: {Accuracy:.4f}")
 
+from time import time
 if __name__ == "__main__":
+    start_time = time()
     SSXGBoost_test("breast")
+    end_time = time()
+    print(f"SSXGBoost test completed in {end_time - start_time:.2f} seconds.")
+    # SSXGBoost_test("adult")

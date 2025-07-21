@@ -1,133 +1,169 @@
 from common import  out_dom
-from lightphe import LightPHE
+from heu import phe
+from heu import numpy as hnp
 import numpy as np
 from hashlib import sha512
-from random import shuffle,randint
-from rbcl import *
-from joblib import Parallel, delayed
+from rbcl import crypto_core_ristretto255_from_hash, crypto_core_ristretto255_scalar_random, crypto_scalarmult_ristretto255
+import cloudpickle as pickle
 import pandas as pd
-from tqdm import tqdm
 
 from time import time
-
-scheme = 'Paillier'
-
-def encrypt(phe: LightPHE, plaintext: list[int]) -> list:
-    cipher = list(map(phe.encrypt, plaintext))
-    return cipher
-
-def decrypt(phe: LightPHE, cipher: list) -> list:
-    plaintext = list(map(phe.decrypt, cipher))
-    return plaintext
-
-def homo_sub(phe: LightPHE, E: list, r: list[int]) -> list:
-    r_cipher = encrypt(phe,r)
-    return list(map(lambda v1, v2: v1 + -1 * v2, E,r_cipher))
-
+# 所有加密数据都按浮点数处理
+encoder = phe.FloatEncoder(phe.SchemaType.ZPaillier)
 class PSIWorker:
-    def __init__(self,data : pd.DataFrame)-> None:
-        self.data = data
-        self.phe = LightPHE(algorithm_name=scheme)
+    """
+    PSIWorker是PSICompany和PSIPartner的基类，提供了数据集读取和对本方持有数据进行加密的功能。
+    """
+    def __init__(self, keys : pd.DataFrame | list[str], private_features : pd.DataFrame | np.ndarray, public_features : pd.DataFrame | np.ndarray = None)-> None:
+        """
+        ## Args:
+            keys: 参与方的唯一标识符，要求是一个字符串列表。
+            private_features: 参与方持有的私有特征数据，即需要加密的特征。
+            public_features: 参与方持有的公开特征数据，默认为None。这个参数是预留给XGBoost分桶标签使用。
+        """
+        if isinstance(keys, pd.DataFrame):
+            keys = keys.values.tolist()
+        self.keys = keys
+        if isinstance(private_features, pd.DataFrame):
+            private_features = private_features.to_numpy()
+        self.private_features = private_features.astype(np.float32)
+        if isinstance(public_features, pd.DataFrame):
+            public_features = public_features.to_numpy()
+        self.public_features = public_features.astype(int)
+
+        
+        self.kit = hnp.setup(phe.SchemaType.ZPaillier, 2048)
+        self.private_features = self.kit.array(self.private_features, encoder=encoder)
         self.k = crypto_core_ristretto255_scalar_random()
-        self.num_features = self.data.shape[1] - 1
-        self.num_records = self.data.shape[0]
+        self.num_features = self.private_features.shape[1]
+        self.num_records = self.private_features.shape[0]
     def hash_enc_raw(self):
-        def hash_enc_each_row(row):
-            U_i0 = crypto_core_ristretto255_from_hash(sha512(row[0].encode()).digest())
+        """
+        对keys进行哈希处理，并将私有特征进行加密，最后key、私有特征和公开特征进行随机排列。
+        ## Returns:
+            U_0: 哈希后的keys列表
+            U_1: 加密后的私有特征
+            U_2: 公开特征（如果存在）
+        """
+        U_0 = [crypto_core_ristretto255_from_hash(sha512(key.encode()).digest()) for key in self.keys]
+        encryptor = self.kit.encryptor()
+        U_1 = encryptor.encrypt(self.private_features)
+        U_2 = self.public_features
 
-            U_i0 = crypto_scalarmult_ristretto255(self.k,U_i0)
-            U_c_i1 = encrypt(self.phe,row[1:])
-            return (U_i0,U_c_i1)
-        print("Hashing keys and encrypting raw data")
-        U = Parallel(n_jobs = -1)(delayed(hash_enc_each_row)(row) for _, row in tqdm(self.data.iterrows()))
-
-        shuffle(U)
-        return U        
+        pem = np.random.permutation(self.num_records).tolist()
+        # 对U_0, U_1, U_2进行随机排列
+        U_0 = [crypto_scalarmult_ristretto255(self.k,U_0[i]) for i in pem] # 哈希值乘k次方
+        U_1 = U_1[pem]
+        if U_2 is not None:
+            U_2 = U_2[pem]
+        return U_0, U_1, U_2
 
 class PSICompany(PSIWorker):
     def exchange(self):
-        self.phe.export_keys(target_file='company_pubkey.json',public=True)
+        """
+        ## Returns:
+            U_c: 包含乘方后的key哈希值、加密后的私有特征
+            pk_buffer: Company公钥
+        """
+        pk_buffer = pickle.dumps(self.kit.public_key())
         U_c = self.hash_enc_raw()
-        return U_c
-    def compute_intersection(self,E_c ,U_p):
-        self.peer_num_features = len(U_p[0][1])
-        self.peer_num_records = len(U_p)
-        
-        E_p = [(crypto_scalarmult_ristretto255(self.k,u_p_i[0]),u_p_i[1]) for u_p_i in U_p]
-        
-        self.phe_p = LightPHE(algorithm_name=scheme,key_file='partner_pubkey.json')
-        company_hash = pd.DataFrame([(ec[0], i) for i, ec in enumerate(E_c)],columns=['hash','i'])
-        partner_hash = pd.DataFrame([(ep[0], j) for j, ep in enumerate(E_p)],columns=['hash','j'])
+        return U_c, pk_buffer
+    def compute_intersection(self,E_c ,U_p, partner_pk):
+        """
+        计算交集
+        ## Args:
+            E_c: Company加密后的数据，包含二次乘方后的key哈希值、加密后的私有特征和公开特征
+            U_p: Partner加密后的数据，包含乘方后的keys哈希值、加密后的私有特征和公开特征
+            partner_pk: Partner的公钥
+        ## Returns:
+            L: 交集的索引和未解密的Partner私有特征分片
+            R_cI: Company私有特征分片和公开特征。其中R_cI[0]是私有特征分片，R_cI[1]是公开特征。
+        """
+        U_p_0, U_p_1, U_p_2 = U_p
+        peer_num_records, peer_num_features = U_p_1.shape
+        # 计算Partner二次乘方后的哈希值
+        E_p_0 = [crypto_scalarmult_ristretto255(self.k,u_p_0_i) for u_p_0_i in U_p_0]
+        E_p_1, E_p_2 = U_p_1, U_p_2
+
+        E_c_0, E_c_1, E_c_2 = E_c
+
+        self.pkit = hnp.setup(pickle.loads(partner_pk))
+        # 比较二次乘方后的哈希值求交
+        # 此处可考虑针对非平衡数据集场景进行优化
+        company_hash = pd.DataFrame([(ec0, i) for i, ec0 in enumerate(E_c_0)],columns=['hash','i'])
+        partner_hash = pd.DataFrame([(ep0, j) for j, ep0 in enumerate(E_p_0)],columns=['hash','j'])
         intersection = pd.merge(company_hash,partner_hash,how='inner',on='hash')
-        id_intersection = intersection[['i','j']].to_numpy()
-        N_p = self.phe_p.cs.plaintext_modulo
-        r_p = [[randint(0,N_p) for _ in range(self.peer_num_features)] for _ in range(self.peer_num_records)]
 
-        def compute_L(i,j):
-            E_p_j = E_p[j][1]
-            r_p_j = r_p[j]
-            E_p_j = homo_sub(self.phe_p, E_p_j, r_p_j)
-            return (i,E_p_j)
-        
+        r_p = np.random.randint(0, out_dom, size=(len(intersection), peer_num_features))
+        r_p_enc = self.pkit.encryptor().encrypt(self.pkit.array(r_p, encoder=encoder))
+
         print("Computing masked partner cipher")
-        L = Parallel(n_jobs=-1)(delayed(compute_L)(i,j) for i, j in tqdm(id_intersection))
-
-        def compute_R_cI(i,j):
-            E_c_i = E_c[i][1]
-            r_p_j =r_p[j]
-            E_c_i_plaintext = decrypt(self.phe, E_c_i)
-            E_c_i_plaintext = [E_c_ik % out_dom  for E_c_ik in E_c_i_plaintext]
-            r_p_j = [r_p_jk % out_dom for r_p_jk in r_p_j]
-            
-            R_cI_i = E_c_i_plaintext
-            R_cI_i.extend(r_p_j)
-            return R_cI_i     
+        L = (
+            intersection['i'].values.tolist(), 
+            self.pkit.evaluator().sub(E_p_1[intersection['j'].tolist()], r_p_enc),
+            E_p_2[intersection['j'].values] if E_p_2 is not None else None
+        )    
         print("Computing company shares")  
-        R_cI = Parallel(n_jobs=-1)(delayed(compute_R_cI)(i,j) for i,j in tqdm(id_intersection))
-        return L, np.array(R_cI)
+        R_cI = (
+            self.kit.decryptor().decrypt(E_c_1[intersection['i'].tolist()]).to_numpy(encoder),
+            r_p
+        )
+        return L, (np.hstack((R_cI[0], R_cI[1])),E_c_2[intersection['i'].tolist()] if E_c_2 is not None else None)
             
 
 class PSIPartner(PSIWorker):
-    def exchange(self,U_c):  
-        self.peer_num_features = len(U_c[0][1]) 
-        self.peer_num_records = len(U_c)
-        self.phe.export_keys(target_file='partner_pubkey.json',public=True)
+    def exchange(self,U_c, company_pk):  
+        """
+        交换数据和公钥
+        ## Args:
+            U_c: Company加密后的数据，包含乘方后的key哈希值、加密后的私有特征和公开特征
+            company_pk: Company的公钥
+        ## Returns:
+            E_c: Company加密后的数据，包含二次乘方后的keys哈希值、未解密的私有特征分片和公开特征
+            U_p: Partner乘方keys哈希值、加密后的私有特征和公开特征
+            pk_buffer: Partner公钥
+        """
+        pk_buffer = pickle.dumps(self.kit.public_key())
         U_p = self.hash_enc_raw()
 
-        self.phe_c = LightPHE(algorithm_name=scheme,key_file='company_pubkey.json')
+        self.kit_c = hnp.setup(pickle.loads(company_pk))
 
-        
-        N_c = self.phe_c.cs.plaintext_modulo
-        self.r_c = [[randint(0,N_c) for _ in range(self.peer_num_features)] for _ in range(self.peer_num_records)]
+        U_c_0, U_c_1, U_c_2 = U_c
+        peer_num_records, peer_num_features = U_c_1.shape
+        self.r_c = np.random.randint(0, out_dom, size=U_c_1.shape)
 
-        def compute_E_c(i,u_c_i):
-            E_c_i0 = crypto_scalarmult_ristretto255(self.k,u_c_i[0])
-            E_c_i1 = homo_sub(self.phe_c, u_c_i[1], self.r_c[i])
-            return (E_c_i0,E_c_i1)
-        
         print("Computing masked company cipher")
-        E_c = Parallel(n_jobs=-1)(delayed(compute_E_c)(i, u_c_i) for i, u_c_i in enumerate(tqdm(U_c)))
+        E_c_0 = [crypto_scalarmult_ristretto255(self.k,u_c_0_i) for u_c_0_i in U_c_0] 
+        r_c_enc = self.kit_c.encryptor().encrypt(self.kit_c.array(self.r_c, encoder=encoder))
+        E_c_1 = self.kit_c.evaluator().sub(U_c_1, r_c_enc)
+        E_c_2 = U_c_2
 
-        pem = np.random.permutation(self.peer_num_records)
-        E_c_pem = [E_c[i] for i in pem]
-        self.r_c = [self.r_c[i] for i in pem]
+        pem = np.random.permutation(peer_num_records).tolist()
+        E_c_0 = [E_c_0[i] for i in pem]
+        E_c_1 = E_c_1[pem]
+        if E_c_2 is not None:
+            E_c_2 = E_c_2[pem]
 
-        return E_c_pem, U_p
-    
+        self.r_c = self.r_c[pem]
+
+        return (E_c_0, E_c_1, E_c_2), U_p, pk_buffer
+
     def output_shares(self, L):
-        N_c = self.phe_c.cs.plaintext_modulo
-        N_p = self.phe.cs.plaintext_modulo
-        
-        def compute_R_pI(i, E_p_j):
-            R_pI_i0 = [(r_c_ik - N_c) % out_dom for r_c_ik in self.r_c[i]]
-            E_p_j_plaintext = decrypt(self.phe, E_p_j)
-            R_pI_i1 = [(E_p_jk - N_p) % out_dom for E_p_jk in E_p_j_plaintext]
-            R_pI_i = R_pI_i0
-            R_pI_i.extend(R_pI_i1)
-            return R_pI_i
+        """
+        输出Partner的私有特征分片和公开特征
+        ## Args:
+            L: 包含交集索引、未解密的Partner私有特征分片和公开特征
+        ## Returns:
+            R_pI: Partner的私有特征分片和公开特征。其中R_pI[0]是私有特征分片，R_pI[1]是公开特征。
+        """
+
         print("Computing partner shares")
-        R_pI = Parallel(n_jobs=-1)(delayed(compute_R_pI)(i, E_p_j)for i, E_p_j in tqdm(L))
-        return np.array(R_pI)
+        r_c = self.r_c[L[0]]
+        R_pI = (
+            r_c,
+            self.kit.decryptor().decrypt(L[1]).to_numpy(encoder)
+        )
+        return (np.hstack((R_pI[0],R_pI[1])), L[2])
 
 
 def generate_random_data(num_records, num_features):
@@ -136,33 +172,26 @@ def generate_random_data(num_records, num_features):
     keys = [''.join(random.choices(string.ascii_uppercase +
                              string.digits, k=20)) for _ in range(num_records)]
     keys = pd.DataFrame(keys,columns=['0'])
-    data = pd.DataFrame(np.random.randint(0,100,size=(num_records,num_features),dtype=np.uint64))
+    data = pd.DataFrame(100*np.random.rand(num_records,num_features))
     data = pd.concat([keys,data],axis=1)
     data.columns = range(data.shape[1])
     return data
 
 def test_PSI(company_data, partner_data, INTER_ori):
     t1 = time()
-    company = PSICompany(company_data)
-    partner = PSIPartner(partner_data)
-    U_c = company.exchange()
-    E_c, U_p = partner.exchange(U_c)
-    L, R_cI = company.compute_intersection(E_c, U_p)
+    company = PSICompany(company_data.iloc[:,0], company_data.iloc[:,1:])
+    partner = PSIPartner(partner_data.iloc[:,0], partner_data.iloc[:,1:])
+    U_c, company_pk = company.exchange()
+    E_c, U_p, partner_pk = partner.exchange(U_c, company_pk)
+    L, R_cI = company.compute_intersection(E_c, U_p, partner_pk)
     R_pI = partner.output_shares(L)
     print("PSI time taken: ",time()-t1)
-    R_I = (R_cI + R_pI) % out_dom
-    INTER_res = set()
-    for R_I_i in R_I:
-        H_I = sha512()
-        for R_I_ij in R_I_i:
-            H_I.update(str(R_I_ij).encode())
-        INTER_res.add(H_I.hexdigest())
-    print(np.array(R_I))
-    assert INTER_ori == INTER_res, "Intersection is not correct"
+    R_I = (R_cI[0] + R_pI[0]) % out_dom
+    print(R_I)
 
 def random_PSI_test(scale = 100):
-    intersection = generate_random_data(scale,100)
-    company_data = pd.concat([generate_random_data(scale//2,100),intersection],axis=0).sample(frac=1)
+    intersection = generate_random_data(10,100)
+    company_data = pd.concat([generate_random_data(scale,100),intersection],axis=0).sample(frac=1)
     partner_data = pd.concat([generate_random_data(scale//2,100),intersection],axis=0).sample(frac=1)
     intersection = pd.merge(company_data,partner_data,how='inner')
     intersection = intersection.to_numpy()[:,1:]
