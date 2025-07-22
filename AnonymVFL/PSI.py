@@ -17,9 +17,9 @@ class PSIWorker:
     def __init__(self, keys : pd.DataFrame | list[str], private_features : pd.DataFrame | np.ndarray, public_features : pd.DataFrame | np.ndarray = None)-> None:
         """
         ## Args:
-            keys: 参与方的唯一标识符，要求是一个字符串列表。
-            private_features: 参与方持有的私有特征数据，即需要加密的特征。
-            public_features: 参与方持有的公开特征数据，默认为None。这个参数是预留给XGBoost分桶标签使用。
+         - keys: 参与方的唯一标识符，要求是一个字符串列表。
+         - private_features: 参与方持有的私有特征数据，即需要加密的特征。
+         - public_features: 参与方持有的公开特征数据，默认为None。这个参数是预留给XGBoost分桶标签使用。
         """
         if isinstance(keys, pd.DataFrame):
             keys = keys.values.tolist()
@@ -41,9 +41,9 @@ class PSIWorker:
         """
         对keys进行哈希处理，并将私有特征进行加密，最后key、私有特征和公开特征进行随机排列。
         ## Returns:
-            U_0: 哈希后的keys列表
-            U_1: 加密后的私有特征
-            U_2: 公开特征（如果存在）
+         - U_0: 哈希后的keys列表
+         - U_1: 加密后的私有特征
+         - U_2: 公开特征（如果存在）
         """
         U_0 = [crypto_core_ristretto255_from_hash(sha512(key.encode()).digest()) for key in self.keys]
         encryptor = self.kit.encryptor()
@@ -62,8 +62,8 @@ class PSICompany(PSIWorker):
     def exchange(self):
         """
         ## Returns:
-            U_c: 包含乘方后的key哈希值、加密后的私有特征
-            pk_buffer: Company公钥
+         - U_c: 包含乘方后的key哈希值、加密后的私有特征
+         - pk_buffer: Company公钥
         """
         pk_buffer = pickle.dumps(self.kit.public_key())
         U_c = self.hash_enc_raw()
@@ -72,12 +72,12 @@ class PSICompany(PSIWorker):
         """
         计算交集
         ## Args:
-            E_c: Company加密后的数据，包含二次乘方后的key哈希值、加密后的私有特征和公开特征
-            U_p: Partner加密后的数据，包含乘方后的keys哈希值、加密后的私有特征和公开特征
-            partner_pk: Partner的公钥
+         - E_c: Company加密后的数据，包含二次乘方后的key哈希值、加密后的私有特征和公开特征
+         - U_p: Partner加密后的数据，包含乘方后的keys哈希值、加密后的私有特征和公开特征
+         - partner_pk: Partner的公钥
         ## Returns:
-            L: 交集的索引和未解密的Partner私有特征分片
-            R_cI: Company私有特征分片和公开特征。其中R_cI[0]是私有特征分片，R_cI[1]是公开特征。
+         - L: 交集的索引和未解密的Partner私有特征分片
+         - R_cI: Company私有特征分片和公开特征。其中R_cI[0]是私有特征分片，R_cI[1]是公开特征。
         """
         U_p_0, U_p_1, U_p_2 = U_p
         peer_num_records, peer_num_features = U_p_1.shape
@@ -88,18 +88,20 @@ class PSICompany(PSIWorker):
         E_c_0, E_c_1, E_c_2 = E_c
 
         self.pkit = hnp.setup(pickle.loads(partner_pk))
-        # 比较二次乘方后的哈希值求交
+        # 比较二次乘方后的哈希值求交集
         # 此处可考虑针对非平衡数据集场景进行优化
         company_hash = pd.DataFrame([(ec0, i) for i, ec0 in enumerate(E_c_0)],columns=['hash','i'])
         partner_hash = pd.DataFrame([(ep0, j) for j, ep0 in enumerate(E_p_0)],columns=['hash','j'])
         intersection = pd.merge(company_hash,partner_hash,how='inner',on='hash')
-
+        # 生成随机数。理论上随机数的范围应是Paillier的明文空间，但实际上小一些的值也不影响结果的正确性
+        # 后续可研究如何获取Paillier的明文空间的值
         r_p = np.random.randint(0, out_dom, size=(len(intersection), peer_num_features))
         r_p_enc = self.pkit.encryptor().encrypt(self.pkit.array(r_p, encoder=encoder))
 
         print("Computing masked partner cipher")
         L = (
             intersection['i'].values.tolist(), 
+            # homo sub
             self.pkit.evaluator().sub(E_p_1[intersection['j'].tolist()], r_p_enc),
             E_p_2[intersection['j'].values] if E_p_2 is not None else None
         )    
@@ -116,12 +118,12 @@ class PSIPartner(PSIWorker):
         """
         交换数据和公钥
         ## Args:
-            U_c: Company加密后的数据，包含乘方后的key哈希值、加密后的私有特征和公开特征
-            company_pk: Company的公钥
+         - U_c: Company加密后的数据，包含乘方后的key哈希值、加密后的私有特征和公开特征
+         - company_pk: Company的公钥
         ## Returns:
-            E_c: Company加密后的数据，包含二次乘方后的keys哈希值、未解密的私有特征分片和公开特征
-            U_p: Partner乘方keys哈希值、加密后的私有特征和公开特征
-            pk_buffer: Partner公钥
+         - E_c: Company加密后的数据，包含二次乘方后的keys哈希值、未解密的私有特征分片和公开特征
+         - U_p: Partner乘方keys哈希值、加密后的私有特征和公开特征
+         - pk_buffer: Partner公钥
         """
         pk_buffer = pickle.dumps(self.kit.public_key())
         U_p = self.hash_enc_raw()
@@ -130,11 +132,15 @@ class PSIPartner(PSIWorker):
 
         U_c_0, U_c_1, U_c_2 = U_c
         peer_num_records, peer_num_features = U_c_1.shape
+        # 生成随机数。理论上随机数的范围应是Paillier的明文空间，但实际上小一些的值也不影响结果的正确性
+        # 后续可研究如何获取Paillier的明文空间的值
         self.r_c = np.random.randint(0, out_dom, size=U_c_1.shape)
 
         print("Computing masked company cipher")
+        # 计算Company二次乘方后的哈希值
         E_c_0 = [crypto_scalarmult_ristretto255(self.k,u_c_0_i) for u_c_0_i in U_c_0] 
         r_c_enc = self.kit_c.encryptor().encrypt(self.kit_c.array(self.r_c, encoder=encoder))
+        # homo sub
         E_c_1 = self.kit_c.evaluator().sub(U_c_1, r_c_enc)
         E_c_2 = U_c_2
 
@@ -165,7 +171,7 @@ class PSIPartner(PSIWorker):
         )
         return (np.hstack((R_pI[0],R_pI[1])), L[2])
 
-
+# 下面的代码是生成随机数据集测试PSI性能，直接运行本文件即可
 def generate_random_data(num_records, num_features):
     import random,string
 
