@@ -27,9 +27,10 @@ class PSIWorker:
         if isinstance(private_features, pd.DataFrame):
             private_features = private_features.to_numpy()
         self.private_features = private_features.astype(np.float32)
+        self.public_features = public_features
         if isinstance(public_features, pd.DataFrame):
             public_features = public_features.to_numpy()
-        self.public_features = public_features.astype(int)
+            self.public_features = public_features.astype(int)
 
         
         self.kit = hnp.setup(phe.SchemaType.ZPaillier, 2048)
