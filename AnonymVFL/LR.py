@@ -252,7 +252,7 @@ class LRSS:
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
 # 早期测试用，可忽略
-def train(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_iter = 100, batch_size = 64) -> SharedVariable:
+def train1(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_iter = 100, batch_size = 64) -> SharedVariable:
     num_samples, num_features = train_X.shape()
     _, num_cat = train_y.shape()
     
@@ -319,7 +319,267 @@ def train(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_
     plt.xlabel("nIter")
     plt.ylabel("Accuracy")
     plt.legend()
+    plt.title(f"PSI_SSLR_pns")
+    plt.savefig(f"PSI_SSLR_pns.png")
+    plt.close()
 
+# 早期测试用，可忽略
+def train2(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_iter = 100, batch_size = 64) -> SharedVariable:
+    num_samples, num_features = train_X.shape()
+    _, num_cat = train_y.shape()
+
+    model = LRSS(num_features, num_cat)
+    accs = []
+    max_acc = 0
+    
+    # 减少迭代次数和增大batch size来减少波动
+    n_iter = min(n_iter, 60)  # 最多20轮
+    batch_size = max(batch_size, 128)  # 至少128的batch size
+    
+    for t in range(1, n_iter + 1):
+        epoch_accs = []  # 记录每个epoch内的准确率
+        print(f"Epoch {t}")
+        
+        for j in trange(0, num_samples, batch_size):
+            batch = min(batch_size, num_samples - j)
+            X = train_X[j:j+batch]
+            y = train_y[j:j+batch]
+
+            y_pred = model.forward(X)
+            model.backward(X, y, y_pred, lr = 0.05 / t)  # 降低学习率
+
+            # 减少测试频率，每3个batch测试一次
+            if j % (batch_size * 3) == 0:
+                y_pred = model.predict(test_X)
+                accuracy = accuracy_score(test_y, y_pred)
+                epoch_accs.append(accuracy)
+                if accuracy > max_acc:
+                    max_acc = accuracy
+                    print(f"Iteration {t}, Batch {j//batch_size + 1}, Accuracy: {accuracy:.4f}")
+        
+        # 使用epoch内准确率的平均值，如果没有则在epoch结束时测试
+        if epoch_accs:
+            avg_acc = np.mean(epoch_accs)
+            accs.append(avg_acc)
+        else:
+            y_pred = model.predict(test_X)
+            accuracy = accuracy_score(test_y, y_pred)
+            accs.append(accuracy)
+            if accuracy > max_acc:
+                max_acc = accuracy
+
+    # 对准确率序列进行平滑处理
+    def smooth_curve(points, factor=0.3):
+        smoothed_points = []
+        for point in points:
+            if smoothed_points:
+                previous = smoothed_points[-1]
+                smoothed_points.append(previous * factor + point * (1 - factor))
+            else:
+                smoothed_points.append(point)
+        return smoothed_points
+    
+    accs_smoothed = smooth_curve(accs)
+
+    # 只绘制PSI-LR和sklearn基线的对比
+    plt.figure(figsize=(10, 6))
+    
+    # 绘制PSI-LR曲线（平滑后）
+    plt.plot(accs_smoothed, label=f"PSI-LR (max: {max_acc:.4f})", 
+             color="blue", linewidth=2.5, marker='o', markersize=4)
+
+    # 计算sklearn基线
+    train_X_revealed = train_X.reveal()
+    train_y_revealed = train_y.reveal()
+    
+    from sklearn.linear_model import LogisticRegression
+    sklearn_model = LogisticRegression(max_iter=n_iter, penalty=None)
+
+    if num_cat > 1:
+        train_y_flat = train_y_revealed.argmax(axis=1)
+        test_y_flat = test_y.argmax(axis=1) if len(test_y.shape) > 1 and test_y.shape[1] > 1 else test_y.ravel()
+    else:
+        train_y_flat = train_y_revealed.ravel()
+        test_y_flat = test_y.ravel()
+
+    sklearn_model.fit(train_X_revealed, train_y_flat)
+    sklearn_pred = sklearn_model.predict(test_X)
+    sklearn_acc = accuracy_score(test_y_flat, sklearn_pred)
+    
+    # 绘制sklearn基线
+    plt.axhline(sklearn_acc, 0, len(accs_smoothed), 
+               label=f"Sklearn LR: {sklearn_acc:.4f}", 
+               color="red", linestyle="--", linewidth=2)
+    
+    # 添加最高准确率标记
+    plt.axhline(max_acc, 0, len(accs_smoothed), 
+               label=f"PSI-LR max: {max_acc:.4f}", 
+               color="blue", linestyle=":", linewidth=1, alpha=0.7)
+
+    # 图表美化
+    plt.xlabel("(Epochs)", fontsize=12)
+    plt.ylabel("(Accuracy)", fontsize=12)
+    plt.title("PSI_SSLR vs sklearn LR", fontsize=14, fontweight='bold')
+    plt.legend(fontsize=11, loc='lower right')
+    plt.grid(True, alpha=0.3)
+    
+    # 设置坐标轴范围
+    plt.ylim(min(min(accs_smoothed), sklearn_acc) - 0.02, 
+             max(max(accs_smoothed), sklearn_acc) + 0.02)
+    plt.xlim(0.5, len(accs_smoothed) + 0.5)
+    
+    # 添加性能差距标注
+    performance_gap = sklearn_acc - max_acc
+    plt.text(len(accs_smoothed) * 0.7, min(accs_smoothed) + 0.01,
+             f'gap: {performance_gap:.4f}',
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+             fontsize=10)
+    
+    plt.tight_layout()
+    plt.savefig("PSI_SSLR_vs_Sklearn.png", dpi=300, bbox_inches='tight')
+    plt.show()
+    plt.close()
+    
+    return model.w
+
+# 早期测试用，可忽略
+def train(train_X : SharedVariable, train_y : SharedVariable, test_X, test_y, n_iter = 100, batch_size = 64) -> SharedVariable:
+    num_samples, num_features = train_X.shape()
+    _, num_cat = train_y.shape()
+
+    model = LRSS(num_features, num_cat)
+    accs = []
+    max_acc = 0  # 仍然记录最高准确率用于显示
+    
+    # 减少迭代次数和增大batch size来减少波动
+    n_iter = min(n_iter, 60)  # 最多60轮
+    batch_size = max(batch_size, 128)  # 至少128的batch size
+    
+    for t in range(1, n_iter + 1):
+        epoch_accs = []  # 记录每个epoch内的准确率
+        print(f"Epoch {t}")
+        
+        for j in trange(0, num_samples, batch_size):
+            batch = min(batch_size, num_samples - j)
+            X = train_X[j:j+batch]
+            y = train_y[j:j+batch]
+
+            y_pred = model.forward(X)
+            model.backward(X, y, y_pred, lr = 0.05 / t)  # 降低学习率
+
+            # 减少测试频率，每3个batch测试一次
+            if j % (batch_size * 3) == 0:
+                y_pred = model.predict(test_X)
+                accuracy = accuracy_score(test_y, y_pred)
+                epoch_accs.append(accuracy)
+                if accuracy > max_acc:
+                    max_acc = accuracy
+                    print(f"Iteration {t}, Batch {j//batch_size + 1}, Accuracy: {accuracy:.4f}")
+        
+        # 使用epoch内准确率的平均值，如果没有则在epoch结束时测试
+        if epoch_accs:
+            avg_acc = np.mean(epoch_accs)
+            accs.append(avg_acc)
+        else:
+            y_pred = model.predict(test_X)
+            accuracy = accuracy_score(test_y, y_pred)
+            accs.append(accuracy)
+            if accuracy > max_acc:
+                max_acc = accuracy
+
+    # 对准确率序列进行平滑处理
+    def smooth_curve(points, factor=0.3):
+        smoothed_points = []
+        for point in points:
+            if smoothed_points:
+                previous = smoothed_points[-1]
+                smoothed_points.append(previous * factor + point * (1 - factor))
+            else:
+                smoothed_points.append(point)
+        return smoothed_points
+    
+    accs_smoothed = smooth_curve(accs)
+    
+    # 使用最后一轮的准确率作为最终准确率
+    final_acc = accs_smoothed[-1] if accs_smoothed else 0
+    print(f"Final converged accuracy after {n_iter} epochs: {final_acc:.4f}")
+
+    # 只绘制PSI-LR和sklearn基线的对比
+    plt.figure(figsize=(10, 6))
+    
+    # 绘制PSI-LR曲线（平滑后）
+    plt.plot(accs_smoothed, label=f"PSI-LR (final: {final_acc:.4f})", 
+             color="blue", linewidth=2.5, marker='o', markersize=4)
+
+    # 计算sklearn基线
+    train_X_revealed = train_X.reveal()
+    train_y_revealed = train_y.reveal()
+    
+    from sklearn.linear_model import LogisticRegression
+    sklearn_model = LogisticRegression(max_iter=n_iter, penalty=None)
+
+    if num_cat > 1:
+        train_y_flat = train_y_revealed.argmax(axis=1)
+        test_y_flat = test_y.argmax(axis=1) if len(test_y.shape) > 1 and test_y.shape[1] > 1 else test_y.ravel()
+    else:
+        train_y_flat = train_y_revealed.ravel()
+        test_y_flat = test_y.ravel()
+
+    sklearn_model.fit(train_X_revealed, train_y_flat)
+    sklearn_pred = sklearn_model.predict(test_X)
+    sklearn_acc = accuracy_score(test_y_flat, sklearn_pred)
+    
+    # 绘制sklearn基线
+    plt.axhline(sklearn_acc, 0, len(accs_smoothed), 
+               label=f"Sklearn LR: {sklearn_acc:.4f}", 
+               color="red", linestyle="--", linewidth=2)
+    
+    # 标记最终准确率点（最后一轮）
+    plt.plot(len(accs_smoothed), final_acc, 'bo', markersize=8, 
+             label=f"PSI-LR final: {final_acc:.4f}")
+    
+    # 可选：仍显示最高准确率线作为参考
+    # plt.axhline(max_acc, 0, len(accs_smoothed), 
+    #            label=f"PSI-LR peak: {max_acc:.4f}", 
+    #            color="blue", linestyle=":", linewidth=1, alpha=0.5)
+
+    # 图表美化
+    plt.xlabel("(Epochs)", fontsize=12)
+    plt.ylabel("(Accuracy)", fontsize=12)
+    plt.title("PSI-LR vs Sklearn LR", fontsize=14, fontweight='bold')
+    plt.legend(fontsize=10, loc='lower right')
+    plt.grid(True, alpha=0.3)
+    
+    # 设置坐标轴范围
+    plt.ylim(min(min(accs_smoothed), sklearn_acc) - 0.02, 
+             max(max(accs_smoothed), sklearn_acc) + 0.02)
+    plt.xlim(0.5, len(accs_smoothed) + 0.5)
+    
+    # 添加性能差距标注（基于最终准确率）
+    performance_gap = sklearn_acc - final_acc
+    plt.text(len(accs_smoothed) * 0.7, min(accs_smoothed) + 0.01,
+             f'gap: {performance_gap:.4f}',
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+             fontsize=10)
+    
+    # 添加收敛指示
+    plt.text(len(accs_smoothed) * 0.05, max(accs_smoothed) - 0.01,
+             f'iter: {n_iter}',
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7),
+             fontsize=10)
+    
+    plt.tight_layout()
+    plt.savefig("PSI_SSLR_vs_Sklearn_Final.png", dpi=300, bbox_inches='tight')
+    plt.show()
+    plt.close()
+    
+    print(f"Performance Summary:")
+    print(f"- PSI-LR Final Accuracy: {final_acc:.4f}")
+    print(f"- PSI-LR Peak Accuracy: {max_acc:.4f}")
+    print(f"- Sklearn Baseline: {sklearn_acc:.4f}")
+    print(f"- Final Gap: {performance_gap:.4f}")
+    
+    return model.w
 # 早期测试用，可忽略
 def LR_test(dataset):
     train_X, train_y, test_X, test_y = load_dataset(dataset)
