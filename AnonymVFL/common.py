@@ -199,6 +199,7 @@ class MPCInitializer:
     根据secretflow的文档，仅修改此处的初始化方式而几乎无需改动其他源码即可实现分布式部署
     """
     def __init__(self, mode = 'simulation'):
+        self.mode = mode
         if mode == 'simulation':
             sf.init(['company', 'partner', 'coordinator'],
             address='local',
@@ -206,3 +207,15 @@ class MPCInitializer:
             self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
             self.spu = sf.SPU(self.config)
             self.company, self.partner, self.coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
+            encoding = {
+                        'cleartext_type': 'DT_F32',
+                        'encoder': 'FloatEncoder'
+                        }
+            heu_config = sf.utils.testing.heu_config(sk_keeper='company', evaluators=['partner'])
+            heu_config['encoding'] = encoding
+            self.company_heu = sf.HEU(heu_config, self.spu.cluster_def['runtime_config']['field'])
+
+            heu_config = sf.utils.testing.heu_config(sk_keeper='partner', evaluators=['company'])
+            heu_config['encoding'] = encoding
+            self.partner_heu = sf.HEU(heu_config, self.spu.cluster_def['runtime_config']['field'])
+
