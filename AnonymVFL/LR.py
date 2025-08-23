@@ -4,17 +4,12 @@ from tqdm import trange, tqdm
 from common import out_dom
 import jax.numpy as jnp
 import secretflow as sf
-from secretflow.device.device import SPUObject, PYUObject
-
-from common import MPCInitializer, sigmoid, softmax, load_dataset
-
-mpc_init = MPCInitializer()
-company, partner, coordinator, spu = mpc_init.company, mpc_init.partner, mpc_init.coordinator, mpc_init.spu
-
-label_holder = company
+from secretflow.device import SPUObject, PYUObject
+from secretflow import SPU, PYU
+from common import sigmoid, softmax, load_dataset
 
 class SSLR:
-    def __init__(self, in_features : int, out_features : int = 1, lambda_ : float = 0, approx : bool = True):
+    def __init__(self, spu : SPU, lambda_ : float = 0, approx : bool = True):
         """
         ## Args: 
          - in_features: 输入特征的数量
@@ -24,9 +19,7 @@ class SSLR:
          这里提供了LR的两种实现。如果approx为True，则使用线性分段函数近似sigmoid函数。多分类场景下本模块会训练多个平行的2分类器（然而这样会导致每个分类器输出之和不为1，后续可考虑是否有更好的多分类算法）。
          如果approx为False，则不近似sigmoid函数。双方先用安全多方乘法计算z = X @ w的结果，再将z发送到y的持有者（y不作秘密共享），由y的持有者计算sigmoid和梯度。多分类场景下用本模块softmax函数代替sigmoid函数。
         """
-        self.out_features = out_features
-        # 初始化权重为0
-        self.w = label_holder(jnp.zeros)((in_features, out_features), dtype=jnp.float32).to(spu)
+        self.spu = spu
         self.lambda_ = lambda_
         self.approx = approx
 
@@ -35,36 +28,36 @@ class SSLR:
         ## Args:
          - X: 输入秘密共享的特征矩阵
         """
+        def matmul(X, w):
+            return X @ w
+        z = self.spu(matmul)(X, self.w)
+        z = z.to(self.label_holder) # 将z发送给标签y的持有
         if self.approx:
-            def fw(X, w):
-                # 使用线性分段函数近似sigmoid函数
-                return jnp.clip(X @ w + 1/2, 0, 1)
-            return spu(fw)(X, self.w)
+            def approx_sigmoid(z):
+                return jnp.clip(z + 1/2, 0, 1)
+            return self.label_holder(approx_sigmoid)(z)
         else:
-            def fw(X, w):
-                return X @ w
-            z = spu(fw)(X, self.w)
-            z = z.to(label_holder) # 将z发送给标签y的持有者
             if self.out_features == 1:
-                return label_holder(sigmoid)(z)
+                return self.label_holder(sigmoid)(z)
             else:
-                return label_holder(softmax)(z)
+                return self.label_holder(softmax)(z)
 
-    def predict(self, X : SPUObject):
+    def predict(self, X : SPUObject, device : PYU):
         """
         ## Args:
          - X: 输入秘密共享的特征矩阵
         """
-        y = self.forward(X)
-        y = y.to(label_holder)
+        y = self.forward(X).to(device)
+        assert isinstance(device,PYU), 'predictions must be moved to a PYU device'
+        def to_int_labels(logits):
+            #将logit转化为整数标签
+            if logits.shape[1] == 1:
+                return jnp.round(logits)
+            else:
+                return jnp.argmax(logits, axis=1)
+        y = device(to_int_labels)(y)
 
-        #将logit转化为整数标签
-        if self.out_features == 1:
-            y = label_holder(jnp.round)(y)
-        else:
-            y = label_holder(jnp.argmax)(y, axis=1)
-
-        return sf.reveal(y).reshape(-1, 1)
+        return y
 
     def backward(self, X : SPUObject, y : SPUObject | PYUObject, y_pred : SPUObject | PYUObject, lr : float = 0.1):
         """
@@ -75,30 +68,72 @@ class SSLR:
          - y_pred: 模型预测结果，秘密共享或明文
          - lr: 梯度下降步长，默认为0.1
         """
-        if not self.approx:
-            y = y.to(spu)
-            y_pred = y_pred.to(spu)
-        def grad_desc(lambda_, w, X, y_pred, y):
+        assert y.device == y_pred.device, "y and y_pred must be on the same device"
+        def compute_gradient(y_pred, y):
+            return y_pred - y
+        grad = self.label_holder(compute_gradient)(y_pred, y)
+        grad = grad.to(self.spu)
+        def grad_desc(lambda_, w, X, grad):
             batch_size = X.shape[0]
-            diff = y_pred - y
-            return (1 - lambda_) * w - (lr/batch_size) * (X.transpose() @ diff)
-        self.w = spu(grad_desc)(self.lambda_, self.w, X, y_pred, y)
+            return (1 - lambda_) * w - (lr/batch_size) * (X.transpose() @ grad)
+        self.w = self.spu(grad_desc)(self.lambda_, self.w, X, grad)
 
-    def fit(self, Xs, ys, n_iter = 100, lr = 0.1):
+    def fit(self, X : SPUObject, y : SPUObject | PYUObject, X_test : SPUObject | None = None, y_test : PYUObject | None = None, batch_size = 64, val_steps = 1, n_epochs = 10, lr = 0.1):
         """
         训练指定轮数
         ## Args:
-        - Xs: 输入特征矩阵列表，每个元素都是X的一个batch，X秘密共享
-        - ys: 标签列表，每个元素都是y的一个batch，y秘密共享或明文
-        - n_iter: 训练轮数，默认为100
-        - lr: 学习率，默认为0.1
+        - X : SPUObject, 训练集特征矩阵。
+        - y : SPUObject | PYUObject, 训练集标签。
+        - X_test : SPUObject | None, 验证集特征矩阵。如提供，将相隔若干step在验证集上评估准确率。
+        - y_test : SPUObject | None, 验证集标签。
+        - batch_size : int, 每个batch的样本数量，默认为64。
+        - val_steps : int, 每隔多少个step在验证集上评估一次。每更新一次权重算一个step。默认为1。
+        - n_epochs : int, 训练轮数，默认为10。
+        - lr : float, 初始学习率，默认为0.1。学习率会随着迭代次数成反比。
         """
-        for t in range(1,n_iter + 1):
+        self.label_holder : PYU | SPU = y.device
+        num_samples, self.in_features = sf.reveal(self.spu(jnp.shape)(X))
+        _, self.out_features = sf.reveal(self.label_holder(jnp.shape)(y))
+        self.in_features = int(self.in_features)
+        self.out_features = int(self.out_features)
+        self.w = jnp.zeros((self.in_features, self.out_features),dtype=jnp.float32)
+
+        Xs = []
+        ys = []
+        validate = X_test is not None and y_test is not None
+        if not self.approx:
+            assert self.label_holder != self.spu, "When approx is False, y must not be on SPU"
+        for j in trange(0,num_samples,batch_size):
+            batch = min(batch_size,num_samples - j)
+            keys = jnp.arange(j, j + batch)
+            def get_item(X : jnp.ndarray, keys):
+                return X[keys]
+            X_batch = self.spu(get_item, static_argnames=['keys'])(X, keys)
+            y_batch = self.label_holder(get_item, static_argnames=['keys'])(y, keys)
+            Xs.append(X_batch)
+            ys.append(y_batch)
+        steps = 0
+        accs = []
+        for t in range(1,n_epochs + 1):
             print(f"Epoch {t}")
-            for X,y in tqdm(zip(Xs, ys)):
+            for X,y in tqdm((zip(Xs, ys))):
                 y_pred = self.forward(X)
                 # 学习率随着迭代次数递减
                 self.backward(X, y, y_pred, lr / t)
+                if validate and steps % val_steps == 0:
+                    y_pred = self.predict(X_test, y_test.device)
+                    def compute_accuracy(y_true, y_pred):
+                        y_true = y_true.reshape(-1,1)
+                        y_pred = y_pred.reshape(-1,1)
+                        return jnp.mean(y_true == y_pred)
+                    acc = y_test.device(compute_accuracy)(y_test, y_pred)
+                    acc = sf.reveal(acc)
+                    accs.append(acc)
+                    print(f"Iteration {steps}, Accuracy: {acc:.4f}")
+                steps += 1
+
+        return accs
+
 
     def save(self, path):
         # TODO
@@ -113,49 +148,30 @@ def SSLR_test(dataset):
     """
     （不执行PSI）测试SSLR性能，绘制损失曲线
     """
+    from common import MPCInitializer
+    mpc_init = MPCInitializer()
+    spu = mpc_init.spu
+    company = mpc_init.company
+    partner = mpc_init.partner
+
     train_X, train_y, test_X, test_y = load_dataset(dataset)
-    test_X = jnp.array(test_X)
-    test_X = sf.to(company, test_X).to(spu)
-    model = SSLR(train_X.shape[1], train_y.shape[1], approx=False)
-    num_samples = train_X.shape[0]
-    num_cat = train_y.shape[1]
-
-    # 数据分批处理
-    batch_size = 1024
-    Xs = []
-    ys = []
-    for j in trange(0,num_samples,batch_size):
-        batch = min(batch_size,num_samples - j)
-        X_batch = jnp.array(train_X[j:j+batch])
-        X_batch = sf.to(company, X_batch).to(spu)
-        y_batch = jnp.array(train_y[j:j+batch])
-        y_batch = sf.to(company, y_batch).to(spu)
-        Xs.append(X_batch)
-        ys.append(y_batch)
-    
-    n_iter = 20
-    accs = []
-    max_acc = 0
-    for t in range(1,n_iter + 1):
-        print(f"Epoch {t}")
-        for X,y in tqdm(zip(Xs, ys)):
-            y_pred = model.forward(X)
-            model.backward(X, y, y_pred, 0.1 / t)
-
-        y_pred = model.predict(test_X)
-        Accracy = accuracy_score(test_y, y_pred)
-        if Accracy > max_acc:
-            max_acc = Accracy
-            print(f"Iteration {t}, Accuracy: {Accracy:.4f}")
-        accs.append(Accracy)
-
+    num_cat = train_y.shape[1] if len(train_y.shape) > 1 else 1
+    test_X = sf.to(company, jnp.array(test_X)).to(spu)
+    test_y = sf.to(partner, jnp.array(test_y))
+    train_X = sf.to(company, jnp.array(train_X)).to(spu)
+    train_y = sf.to(company, jnp.array(train_y))
+    model = SSLR(spu, approx=False)
+    accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
     plt.plot(accs,label = "SSLR",color = "blue")
 
     test_X = sf.reveal(test_X)
+    test_y = sf.reveal(test_y)
+    train_X = sf.reveal(train_X)
+    train_y = sf.reveal(train_y)
 
     # 对比sklearn的LR实现
     from sklearn.linear_model import LogisticRegression
-    model = LogisticRegression(max_iter = n_iter,penalty=None)
+    model = LogisticRegression(max_iter = 10,penalty=None)
 
     if num_cat > 1:
         train_y = train_y.argmax(axis=1)
