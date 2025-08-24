@@ -9,7 +9,7 @@ from secretflow import SPU, PYU
 from common import sigmoid, softmax, load_dataset
 
 class SSLR:
-    def __init__(self, spu : SPU, lambda_ : float = 0, approx : bool = True):
+    def __init__(self, lambda_ : float = 0, approx : bool = True):
         """
         ## Args: 
          - in_features: 输入特征的数量
@@ -19,11 +19,10 @@ class SSLR:
          这里提供了LR的两种实现。如果approx为True，则使用线性分段函数近似sigmoid函数。多分类场景下本模块会训练多个平行的2分类器（然而这样会导致每个分类器输出之和不为1，后续可考虑是否有更好的多分类算法）。
          如果approx为False，则不近似sigmoid函数。双方先用安全多方乘法计算z = X @ w的结果，再将z发送到y的持有者（y不作秘密共享），由y的持有者计算sigmoid和梯度。多分类场景下用本模块softmax函数代替sigmoid函数。
         """
-        self.spu = spu
         self.lambda_ = lambda_
         self.approx = approx
 
-    def forward(self, X : SPUObject):
+    def _forward(self, X : SPUObject):
         """
         ## Args:
          - X: 输入秘密共享的特征矩阵
@@ -47,9 +46,9 @@ class SSLR:
         ## Args:
          - X: 输入秘密共享的特征矩阵
         """
-        y = self.forward(X).to(device)
+        y = self._forward(X).to(device)
         assert isinstance(device,PYU), 'predictions must be moved to a PYU device'
-        def to_int_labels(logits):
+        def to_int_labels(logits : jnp.ndarray):
             #将logit转化为整数标签
             if logits.shape[1] == 1:
                 return jnp.round(logits)
@@ -59,7 +58,7 @@ class SSLR:
 
         return y
 
-    def backward(self, X : SPUObject, y : SPUObject | PYUObject, y_pred : SPUObject | PYUObject, lr : float = 0.1):
+    def _backward(self, X : SPUObject, y : SPUObject | PYUObject, y_pred : SPUObject | PYUObject, lr : float = 0.1):
         """
         梯度下降步骤
         ## Args:
@@ -73,7 +72,7 @@ class SSLR:
             return y_pred - y
         grad = self.label_holder(compute_gradient)(y_pred, y)
         grad = grad.to(self.spu)
-        def grad_desc(lambda_, w, X, grad):
+        def grad_desc(lambda_, w : jnp.ndarray, X : jnp.ndarray, grad : jnp.ndarray):
             batch_size = X.shape[0]
             return (1 - lambda_) * w - (lr/batch_size) * (X.transpose() @ grad)
         self.w = self.spu(grad_desc)(self.lambda_, self.w, X, grad)
@@ -91,6 +90,8 @@ class SSLR:
         - n_epochs : int, 训练轮数，默认为10。
         - lr : float, 初始学习率，默认为0.1。学习率会随着迭代次数成反比。
         """
+        assert isinstance(X, SPUObject), "X must be a SPUObject"
+        self.spu = X.device
         self.label_holder : PYU | SPU = y.device
         num_samples, self.in_features = sf.reveal(self.spu(jnp.shape)(X))
         _, self.out_features = sf.reveal(self.label_holder(jnp.shape)(y))
@@ -101,6 +102,8 @@ class SSLR:
         Xs = []
         ys = []
         validate = X_test is not None and y_test is not None
+        if validate:
+            assert isinstance(X_test, SPUObject) and X_test.device == self.spu, "X and X_test must be on the same spu"
         if not self.approx:
             assert self.label_holder != self.spu, "When approx is False, y must not be on SPU"
         for j in trange(0,num_samples,batch_size):
@@ -117,12 +120,12 @@ class SSLR:
         for t in range(1,n_epochs + 1):
             print(f"Epoch {t}")
             for X,y in tqdm((zip(Xs, ys))):
-                y_pred = self.forward(X)
+                y_pred = self._forward(X)
                 # 学习率随着迭代次数递减
-                self.backward(X, y, y_pred, lr / t)
+                self._backward(X, y, y_pred, lr / t)
                 if validate and steps % val_steps == 0:
                     y_pred = self.predict(X_test, y_test.device)
-                    def compute_accuracy(y_true, y_pred):
+                    def compute_accuracy(y_true : jnp.ndarray, y_pred : jnp.ndarray):
                         y_true = y_true.reshape(-1,1)
                         y_pred = y_pred.reshape(-1,1)
                         return jnp.mean(y_true == y_pred)
@@ -160,7 +163,7 @@ def SSLR_test(dataset):
     test_y = sf.to(partner, jnp.array(test_y))
     train_X = sf.to(company, jnp.array(train_X)).to(spu)
     train_y = sf.to(company, jnp.array(train_y))
-    model = SSLR(spu, approx=False)
+    model = SSLR(approx=False)
     accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
     plt.plot(accs,label = "SSLR",color = "blue")
 
@@ -351,4 +354,4 @@ if __name__ == "__main__":
     # LR_test("mnist")
     # for dataset in ["pima","pcs","uis","gisette","arcene"]:
     #     LR_test(dataset)
-    SSLR_test("risk")
+    SSLR_test("breast")
