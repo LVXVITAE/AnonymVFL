@@ -204,18 +204,18 @@ class MPCInitializer:
             sf.init(['company', 'partner', 'coordinator'],
             address='local',
             )
-            self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
-            self.spu = sf.SPU(self.config)
-            self.company, self.partner, self.coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
-            encoding = {
-                        'cleartext_type': 'DT_F32',
-                        'encoder': 'FloatEncoder'
-                        }
-            heu_config = sf.utils.testing.heu_config(sk_keeper='company', evaluators=['partner'])
-            heu_config['encoding'] = encoding
-            self.company_heu = sf.HEU(heu_config, self.spu.cluster_def['runtime_config']['field'])
+        self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
+        self.spu = sf.SPU(self.config)
+        self.company, self.partner, self.coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
+        encoding = {
+                    'cleartext_type': 'DT_F32',
+                    'encoder': 'FloatEncoder'
+                    }
+        heu_config = sf.utils.testing.heu_config(sk_keeper='company', evaluators=['partner'])
+        heu_config['encoding'] = encoding
+        self.company_heu = sf.HEU(heu_config, self.spu.cluster_def['runtime_config']['field'])
 
-            heu_config = sf.utils.testing.heu_config(sk_keeper='partner', evaluators=['company'])
-            heu_config['encoding'] = encoding
-            self.partner_heu = sf.HEU(heu_config, self.spu.cluster_def['runtime_config']['field'])
+        heu_config = sf.utils.testing.heu_config(sk_keeper='partner', evaluators=['company'])
+        heu_config['encoding'] = encoding
+        self.partner_heu = sf.HEU(heu_config, self.spu.cluster_def['runtime_config']['field'])
 

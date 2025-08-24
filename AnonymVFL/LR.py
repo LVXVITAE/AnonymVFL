@@ -81,14 +81,17 @@ class SSLR:
         """
         训练指定轮数
         ## Args:
-        - X : SPUObject, 训练集特征矩阵。
-        - y : SPUObject | PYUObject, 训练集标签。
-        - X_test : SPUObject | None, 验证集特征矩阵。如提供，将相隔若干step在验证集上评估准确率。
-        - y_test : SPUObject | None, 验证集标签。
-        - batch_size : int, 每个batch的样本数量，默认为64。
-        - val_steps : int, 每隔多少个step在验证集上评估一次。每更新一次权重算一个step。默认为1。
-        - n_epochs : int, 训练轮数，默认为10。
-        - lr : float, 初始学习率，默认为0.1。学习率会随着迭代次数成反比。
+        - X: 训练集特征矩阵。
+        - y: 训练集标签。
+        - X_test: 验证集特征矩阵。如提供，将相隔若干step在验证集上评估准确率。
+        - y_test: 验证集标签。
+        - batch_size: 每个batch的样本数量，默认为64。
+        - val_steps: 每隔多少个step在验证集上评估一次。每更新一次权重算一个step。默认为1。
+        - n_epochs: 训练轮数，默认为10。
+        - lr: 初始学习率，默认为0.1。学习率会随着迭代次数成反比。
+
+        ## Returns:
+        - accs: 如果提供了验证集，则返回每次在验证集上评估的准确率。
         """
         assert isinstance(X, SPUObject), "X must be a SPUObject"
         self.spu = X.device
