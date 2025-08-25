@@ -1,5 +1,5 @@
 import numpy as np
-from common import VarCompany, VarOwner, VarPartner, share, out_dom
+from common import VarCompany, VarOwner, VarPartner, SS_share, out_dom
 
 def is_constant(x):
     return isinstance(x, (int, float, np.ndarray))
@@ -112,7 +112,7 @@ class SharedVariable:
     
     @classmethod
     def from_secret(cls, value, share_dom = out_dom, company = VarCompany, partner = VarPartner) -> 'SharedVariable':
-        share0, share1 = share(value,share_dom)
+        share0, share1 = SS_share(value,share_dom)
         return cls(share0, share1, company, partner)
     
     @classmethod
@@ -191,10 +191,10 @@ class SharedVariable:
         assert isinstance(other, SharedVariable), "Unsupported operand type(s) for * or @: 'SharedVariable' and '{}'".format(type(other))
         U = np.random.randint(0, out_dom, self.shape(),dtype=np.int64)
         V = np.random.randint(0, out_dom, other.shape(),dtype=np.int64)
-        U0, U1 = share(U)
+        U0, U1 = SS_share(U)
         U0 = Share(U0, self.company)
         U1 = Share(U1, self.partner)
-        V0, V1 = share(V)
+        V0, V1 = SS_share(V)
         V0 = Share(V0, self.company)
         V1 = Share(V1, self.partner)
 
@@ -223,7 +223,7 @@ class SharedVariable:
 
         Z = U * V
 
-        Z0, Z1 = share(Z)
+        Z0, Z1 = SS_share(Z)
         Z0 = Share(Z0, self.company)
         Z1 = Share(Z1, self.partner)
 
@@ -243,7 +243,7 @@ class SharedVariable:
 
         Z = U @ V
 
-        Z0, Z1 = share(Z)
+        Z0, Z1 = SS_share(Z)
         Z0 = Share(Z0, self.company)
         Z1 = Share(Z1, self.partner)
 

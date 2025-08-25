@@ -1,4 +1,5 @@
 import numpy as np
+import jax
 import jax.numpy as jnp
 import pandas as pd
 import os
@@ -21,13 +22,12 @@ class VarCompany(VarOwner):
 class VarPartner(VarOwner):
     pass
 
-# 前期测试用，可忽略
-def share(x, share_dom = out_dom):
+def SS_share(x : jnp.ndarray | int | float) -> tuple[jnp.ndarray | int | float, jnp.ndarray | int | float]:
     '''split x into two additive shares'''
     if isinstance(x, (int,float)):
-        x_1 = np.random.randint(0, share_dom)
-    elif isinstance(x, np.ndarray):
-        x_1 = np.random.randint(0, share_dom, x.shape,dtype=np.int64)
+        x = jnp.array(x)
+
+    x_1 = jax.random.randint(jax.random.PRNGKey(0), x.shape, 0, out_dom)
     x_2 = x - x_1
     return x_1, x_2
 

@@ -6,21 +6,37 @@ import jax.numpy as jnp
 import secretflow as sf
 from secretflow.device import SPUObject, PYUObject
 from secretflow import SPU, PYU
-from common import sigmoid, softmax, load_dataset
+from secretflow.device.device.spu import SPUCompilerNumReturnsPolicy
+from common import sigmoid, softmax, load_dataset, SS_share
+import os, json
 
 class SSLR:
-    def __init__(self, lambda_ : float = 0, approx : bool = True):
+    def __init__(self, devices: dict, lambda_ : float = 0, approx : bool = True):
         """
         ## Args: 
-         - in_features: 输入特征的数量
-         - out_features: 输出特征的数量，默认为1
-         - lambda_: l2正则化参数，默认为0
+         - devices : 应包含四个字段，每个字段的值应为SPU或PYU。例如：
+
+           devices = {
+            'spu': spu,
+            'company': company,
+            'partner': partner,
+            'coordinator': coordinator, # 如使用两方计算协议此字段可忽略
+            'active_party': company
+           }
+
+         - lambda_: l2正则化参数，默认为0。
          - approx: 是否使用近似sigmoid函数，默认为True。
          这里提供了LR的两种实现。如果approx为True，则使用线性分段函数近似sigmoid函数。多分类场景下本模块会训练多个平行的2分类器（然而这样会导致每个分类器输出之和不为1，后续可考虑是否有更好的多分类算法）。
          如果approx为False，则不近似sigmoid函数。双方先用安全多方乘法计算z = X @ w的结果，再将z发送到y的持有者（y不作秘密共享），由y的持有者计算sigmoid和梯度。多分类场景下用本模块softmax函数代替sigmoid函数。
         """
         self.lambda_ = lambda_
         self.approx = approx
+        assert 'spu' in devices and isinstance(devices['spu'], SPU), "devices must contain 'spu' of type SPU"
+        self.spu = devices['spu']
+        self.company = devices['company']
+        self.partner = devices['partner']
+        assert 'active_party' in devices and isinstance(devices['active_party'], PYU), "devices must contain 'active_party' of type PYU"
+        self.active_party = devices['active_party']
 
     def _forward(self, X : SPUObject):
         """
@@ -30,22 +46,26 @@ class SSLR:
         def matmul(X, w):
             return X @ w
         z = self.spu(matmul)(X, self.w)
-        z = z.to(self.label_holder) # 将z发送给标签y的持有
+        z = z.to(self.train_label_keeper) # 将z发送给标签y的持有
         if self.approx:
             def approx_sigmoid(z):
                 return jnp.clip(z + 1/2, 0, 1)
-            return self.label_holder(approx_sigmoid)(z)
+            return self.train_label_keeper(approx_sigmoid)(z)
         else:
             if self.out_features == 1:
-                return self.label_holder(sigmoid)(z)
+                return self.train_label_keeper(sigmoid)(z)
             else:
-                return self.label_holder(softmax)(z)
+                return self.train_label_keeper(softmax)(z)
 
-    def predict(self, X : SPUObject, device : PYU):
+    def predict(self, X : SPUObject, device : PYU | None = None):
         """
         ## Args:
          - X: 输入秘密共享的特征矩阵
+         - device: 预测结果存放的PYU设备
         """
+        assert isinstance(X, SPUObject) and X.device == self.spu, "X must be on SPU"
+        if device is None:
+            device = self.active_party
         y = self._forward(X).to(device)
         assert isinstance(device,PYU), 'predictions must be moved to a PYU device'
         def to_int_labels(logits : jnp.ndarray):
@@ -70,7 +90,7 @@ class SSLR:
         assert y.device == y_pred.device, "y and y_pred must be on the same device"
         def compute_gradient(y_pred, y):
             return y_pred - y
-        grad = self.label_holder(compute_gradient)(y_pred, y)
+        grad = self.train_label_keeper(compute_gradient)(y_pred, y)
         grad = grad.to(self.spu)
         def grad_desc(lambda_, w : jnp.ndarray, X : jnp.ndarray, grad : jnp.ndarray):
             batch_size = X.shape[0]
@@ -93,11 +113,11 @@ class SSLR:
         ## Returns:
         - accs: 如果提供了验证集，则返回每次在验证集上评估的准确率。
         """
-        assert isinstance(X, SPUObject), "X must be a SPUObject"
-        self.spu = X.device
-        self.label_holder : PYU | SPU = y.device
+        assert isinstance(X, SPUObject) and X.device == self.spu, "X must be on SPU"
+        assert (isinstance(y, SPUObject) and y.device == self.spu) or (isinstance(y, PYUObject) and y.device == self.active_party), "y must be on active_party or SPU"
+        self.train_label_keeper = y.device
         num_samples, self.in_features = sf.reveal(self.spu(jnp.shape)(X))
-        _, self.out_features = sf.reveal(self.label_holder(jnp.shape)(y))
+        _, self.out_features = sf.reveal(self.train_label_keeper(jnp.shape)(y))
         self.in_features = int(self.in_features)
         self.out_features = int(self.out_features)
         self.w = jnp.zeros((self.in_features, self.out_features),dtype=jnp.float32)
@@ -107,15 +127,16 @@ class SSLR:
         validate = X_test is not None and y_test is not None
         if validate:
             assert isinstance(X_test, SPUObject) and X_test.device == self.spu, "X and X_test must be on the same spu"
+            assert isinstance(y_test, PYUObject) and y_test.device == self.active_party, "y_test must be on the active_party"
         if not self.approx:
-            assert self.label_holder != self.spu, "When approx is False, y must not be on SPU"
+            assert self.active_party != self.spu, "When approx is False, y must not be on SPU"
         for j in trange(0,num_samples,batch_size):
             batch = min(batch_size,num_samples - j)
             keys = jnp.arange(j, j + batch)
             def get_item(X : jnp.ndarray, keys):
                 return X[keys]
             X_batch = self.spu(get_item, static_argnames=['keys'])(X, keys)
-            y_batch = self.label_holder(get_item, static_argnames=['keys'])(y, keys)
+            y_batch = self.train_label_keeper(get_item, static_argnames=['keys'])(y, keys)
             Xs.append(X_batch)
             ys.append(y_batch)
         steps = 0
@@ -127,7 +148,7 @@ class SSLR:
                 # 学习率随着迭代次数递减
                 self._backward(X, y, y_pred, lr / t)
                 if validate and steps % val_steps == 0:
-                    y_pred = self.predict(X_test, y_test.device)
+                    y_pred = self.predict(X_test)
                     def compute_accuracy(y_true : jnp.ndarray, y_pred : jnp.ndarray):
                         y_true = y_true.reshape(-1,1)
                         y_pred = y_pred.reshape(-1,1)
@@ -141,14 +162,49 @@ class SSLR:
         return accs
 
 
-    def save(self, path):
-        # TODO
-        raise NotImplementedError("Save method not implemented for SSLR")
-    
-    def load(self, path):
-        # TODO
-        raise NotImplementedError("Load method not implemented for SSLR")
-    
+    def save(self, paths : dict[str, str]):
+        '''
+        ## Args
+        - paths: 保存模型的文件夹路径列表，包含company和partner的路径。例如：
+        paths = {
+            'company': 'path/to/company/model',
+            'partner': 'path/to/partner/model'
+        }
+        '''
+        w1, w2 = self.spu(SS_share,num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER,user_specified_num_returns=2)(self.w)
+        w1 = w1.to(self.company)
+        w2 = w2.to(self.partner)
+        info = {
+            'shape' : (self.in_features, self.out_features),
+            'lambda_': float(self.lambda_),
+            'approx': bool(self.approx)
+        }
+        def save_model(w : jnp.ndarray, path : str):
+            try:
+                os.makedirs(path, exist_ok=True)
+                print(f"Directory '{path}' created or already exists.")
+            except OSError as e:
+                print(f"Error creating directory '{path}': {e}")
+            jnp.save(os.path.join(path, 'weight.npy'), w)
+            json.dump(info, open(os.path.join(path, 'info.json'), 'w'))
+        self.company(save_model)(w1, paths['company'])
+        self.partner(save_model)(w2, paths['partner'])
+
+    def load(self, paths):
+        def load_model(path : str):
+            w = jnp.load(os.path.join(path, 'weight.npy'))
+            info = json.load(open(os.path.join(path, 'info.json'), 'r'))
+            return w, info
+        w1, info1 = self.company(load_model)(paths['company'])
+        w2, info2 = self.partner(load_model)(paths['partner'])
+        assert info1 == info2, "Model info mismatch between company and partner"
+        w1 = w1.to(self.spu)
+        w2 = w2.to(self.spu)
+        self.w = self.spu(lambda a, b: a + b)(w1, w2)
+        self.in_features, self.out_features = info1['shape']
+        self.lambda_ = info1['lambda_']
+        self.approx = info1['approx']
+
 # 运行本文件直接执行这个函数
 def SSLR_test(dataset):
     """
@@ -159,15 +215,28 @@ def SSLR_test(dataset):
     spu = mpc_init.spu
     company = mpc_init.company
     partner = mpc_init.partner
+    coordinator = mpc_init.coordinator
+    devices = {
+        'spu': spu,
+        'company': company,
+        'partner': partner,
+        'coordinator': coordinator,
+        'active_party': company
+    }
 
     train_X, train_y, test_X, test_y = load_dataset(dataset)
     num_cat = train_y.shape[1] if len(train_y.shape) > 1 else 1
     test_X = sf.to(company, jnp.array(test_X)).to(spu)
-    test_y = sf.to(partner, jnp.array(test_y))
+    test_y = sf.to(company, jnp.array(test_y))
     train_X = sf.to(company, jnp.array(train_X)).to(spu)
-    train_y = sf.to(company, jnp.array(train_y))
-    model = SSLR(approx=False)
+    train_y = sf.to(company, jnp.array(train_y)).to(spu)
+
+    model = SSLR(devices, approx=True)
     accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
+    model.save({
+        'company': './company_model',
+        'partner': './partner_model'
+    })
     plt.plot(accs,label = "SSLR",color = "blue")
 
     test_X = sf.reveal(test_X)
