@@ -35,7 +35,7 @@ def sigmoid(x : jnp.ndarray) -> jnp.ndarray:
     """
     Computes the sigmoid function.
     """
-    return 1 / (1 + jnp.exp(-x))
+    return 1.0 / (1.0 + jnp.exp(-x))
 
 def softmax(x : jnp.ndarray) -> jnp.ndarray:
     """
@@ -72,7 +72,7 @@ class SigmoidCrossEntropy:
         Computes the hessian of the sigmoid cross-entropy loss.
         """
         y_pred = sigmoid(z)
-        return y_pred * (1 - y_pred)
+        return y_pred * (1.0 - y_pred)
 
 class SoftmaxCrossEntropy:
     @staticmethod
@@ -97,7 +97,7 @@ class SoftmaxCrossEntropy:
         Computes the hessian of the softmax cross-entropy loss.
         """
         y_pred = softmax(z)
-        return y_pred * (1 - y_pred)
+        return y_pred * (1.0 - y_pred)
     
 class MeanSquare:
     @staticmethod

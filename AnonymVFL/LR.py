@@ -68,12 +68,12 @@ class SSLR:
             device = self.active_party
         y = self._forward(X).to(device)
         assert isinstance(device,PYU), 'predictions must be moved to a PYU device'
-        def to_int_labels(logits : jnp.ndarray):
+        def to_int_labels(logits : np.ndarray):
             #将logit转化为整数标签
             if logits.shape[1] == 1:
-                return jnp.round(logits)
+                return np.round(logits)
             else:
-                return jnp.argmax(logits, axis=1)
+                return np.argmax(logits, axis=1)
         y = device(to_int_labels)(y)
 
         return y
@@ -116,11 +116,11 @@ class SSLR:
         assert isinstance(X, SPUObject) and X.device == self.spu, "X must be on SPU"
         assert (isinstance(y, SPUObject) and y.device == self.spu) or (isinstance(y, PYUObject) and y.device == self.active_party), "y must be on active_party or SPU"
         self.train_label_keeper = y.device
-        num_samples, self.in_features = sf.reveal(self.spu(jnp.shape)(X))
-        _, self.out_features = sf.reveal(self.train_label_keeper(jnp.shape)(y))
+        num_samples, self.in_features = sf.reveal(self.spu(np.shape)(X))
+        _, self.out_features = sf.reveal(self.train_label_keeper(np.shape)(y))
         self.in_features = int(self.in_features)
         self.out_features = int(self.out_features)
-        self.w = jnp.zeros((self.in_features, self.out_features),dtype=jnp.float32)
+        self.w = np.zeros((self.in_features, self.out_features),dtype=np.float32)
 
         Xs = []
         ys = []
@@ -132,7 +132,7 @@ class SSLR:
             assert self.active_party != self.spu, "When approx is False, y must not be on SPU"
         for j in trange(0,num_samples,batch_size):
             batch = min(batch_size,num_samples - j)
-            keys = jnp.arange(j, j + batch)
+            keys = np.arange(j, j + batch)
             def get_item(X : jnp.ndarray, keys):
                 return X[keys]
             X_batch = self.spu(get_item, static_argnames=['keys'])(X, keys)
@@ -149,10 +149,10 @@ class SSLR:
                 self._backward(X, y, y_pred, lr / t)
                 if validate and steps % val_steps == 0:
                     y_pred = self.predict(X_test)
-                    def compute_accuracy(y_true : jnp.ndarray, y_pred : jnp.ndarray):
+                    def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
                         y_true = y_true.reshape(-1,1)
                         y_pred = y_pred.reshape(-1,1)
-                        return jnp.mean(y_true == y_pred)
+                        return np.mean(y_true == y_pred)
                     acc = y_test.device(compute_accuracy)(y_test, y_pred)
                     acc = sf.reveal(acc)
                     accs.append(acc)
@@ -162,7 +162,7 @@ class SSLR:
         return accs
 
 
-    def save(self, paths : dict[str, str]):
+    def save(self, paths : dict[str, str], ext = 'npy'):
         '''
         ## Args
         - paths: 保存模型的文件夹路径列表，包含company和partner的路径。例如：
@@ -179,20 +179,24 @@ class SSLR:
             'lambda_': float(self.lambda_),
             'approx': bool(self.approx)
         }
-        def save_model(w : jnp.ndarray, path : str):
+        def save_model(w : np.ndarray, path : str):
             try:
                 os.makedirs(path, exist_ok=True)
                 print(f"Directory '{path}' created or already exists.")
             except OSError as e:
                 print(f"Error creating directory '{path}': {e}")
-            jnp.save(os.path.join(path, 'weight.npy'), w)
+            
+            if ext == 'npy':
+                np.save(os.path.join(path, 'weight.npy'), w)
+            elif ext == 'csv':
+                np.savetxt(os.path.join(path, 'weight.csv'), w, delimiter=',')
             json.dump(info, open(os.path.join(path, 'info.json'), 'w'))
         self.company(save_model)(w1, paths['company'])
         self.partner(save_model)(w2, paths['partner'])
 
     def load(self, paths):
         def load_model(path : str):
-            w = jnp.load(os.path.join(path, 'weight.npy'))
+            w = np.load(os.path.join(path, 'weight.npy'))
             info = json.load(open(os.path.join(path, 'info.json'), 'r'))
             return w, info
         w1, info1 = self.company(load_model)(paths['company'])
@@ -226,17 +230,17 @@ def SSLR_test(dataset):
 
     train_X, train_y, test_X, test_y = load_dataset(dataset)
     num_cat = train_y.shape[1] if len(train_y.shape) > 1 else 1
-    test_X = sf.to(company, jnp.array(test_X)).to(spu)
-    test_y = sf.to(company, jnp.array(test_y))
-    train_X = sf.to(company, jnp.array(train_X)).to(spu)
-    train_y = sf.to(company, jnp.array(train_y)).to(spu)
+    test_X = sf.to(company, test_X).to(spu)
+    test_y = sf.to(company, test_y)
+    train_X = sf.to(company, train_X).to(spu)
+    train_y = sf.to(company, train_y).to(spu)
 
     model = SSLR(devices, approx=True)
     accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
     model.save({
         'company': './company_model',
         'partner': './partner_model'
-    })
+    },ext='csv')
     plt.plot(accs,label = "SSLR",color = "blue")
 
     test_X = sf.reveal(test_X)
@@ -426,4 +430,4 @@ if __name__ == "__main__":
     # LR_test("mnist")
     # for dataset in ["pima","pcs","uis","gisette","arcene"]:
     #     LR_test(dataset)
-    SSLR_test("breast")
+    SSLR_test("risk")
