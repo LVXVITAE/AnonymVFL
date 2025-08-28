@@ -98,7 +98,7 @@ class PSICompany(PSIWorker):
         intersection = sf.reveal(intersection)
         # 生成随机数。理论上随机数的范围应是Paillier的明文空间，但实际上小一些的值也不影响结果的正确性
         # 后续可研究如何获取Paillier的明文空间的值
-        r_p = self.device(np.random.randint)(0, out_dom, size=(len(intersection), partner_data_shape[1]))
+        r_p = self.device(np.random.randint)(-out_dom // 2, out_dom // 2, size=(len(intersection), partner_data_shape[1]))
         r_p_enc = r_p.to(self.partner_heu).encrypt()
 
         print("Computing masked partner cipher")
@@ -137,7 +137,7 @@ class PSIPartner(PSIWorker):
 
         # 生成随机数。理论上随机数的范围应是Paillier的明文空间，但实际上小一些的值也不影响结果的正确性
         # 后续可研究如何获取Paillier的明文空间的值
-        self.r_c = self.device(np.random.randint)(0, out_dom, size=company_data_shape)
+        self.r_c = self.device(np.random.randint)(- out_dom // 2, out_dom // 2, size=company_data_shape)
 
         print("Computing masked company cipher")
         # 计算Company二次乘方后的哈希值

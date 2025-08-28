@@ -6,8 +6,9 @@ import jax.numpy as jnp
 import secretflow as sf
 from secretflow.device import SPUObject, PYUObject
 from secretflow import SPU, PYU
-from secretflow.device.device.spu import SPUCompilerNumReturnsPolicy
-from common import sigmoid, softmax, load_dataset, SS_share
+from secretflow.data import FedNdarray, PartitionWay
+from secretflow.data.ndarray import load
+from common import approx_sigmoid, sigmoid, softmax, load_dataset
 import os, json
 
 class SSLR:
@@ -21,7 +22,6 @@ class SSLR:
             'company': company,
             'partner': partner,
             'coordinator': coordinator, # 如使用两方计算协议此字段可忽略
-            'active_party': company
            }
 
          - lambda_: l2正则化参数，默认为0。
@@ -35,8 +35,6 @@ class SSLR:
         self.spu = devices['spu']
         self.company = devices['company']
         self.partner = devices['partner']
-        assert 'active_party' in devices and isinstance(devices['active_party'], PYU), "devices must contain 'active_party' of type PYU"
-        self.active_party = devices['active_party']
 
     def _forward(self, X : SPUObject):
         """
@@ -48,26 +46,51 @@ class SSLR:
         z = self.spu(matmul)(X, self.w)
         z = z.to(self.train_label_keeper) # 将z发送给标签y的持有
         if self.approx:
-            def approx_sigmoid(z):
-                return jnp.clip(z + 1/2, 0, 1)
-            return self.train_label_keeper(approx_sigmoid)(z)
+            activate_fn = approx_sigmoid
         else:
             if self.out_features == 1:
-                return self.train_label_keeper(sigmoid)(z)
+                activate_fn = sigmoid
             else:
-                return self.train_label_keeper(softmax)(z)
+                activate_fn = softmax
 
-    def predict(self, X : SPUObject, device : PYU | None = None):
+        return self.train_label_keeper(activate_fn)(z)
+
+    def dispatch_weight(self):
+        assert isinstance(self.w, SPUObject), "Weights must be on SPU"
+        def get_item(arr : jnp.ndarray, keys):
+            return arr[keys]
+        w1, w2= self.spu(get_item, static_argnames=['keys'])(self.w, np.arange(self.split_col)), self.spu(get_item, static_argnames=['keys'])(self.w, np.arange(self.split_col, self.in_features))
+        w1 = w1.to(self.company)
+        w2 = w2.to(self.partner)
+        w = load({self.company: w1, self.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
+        return w
+
+    def predict(self, X : FedNdarray, device : PYU):
         """
         ## Args:
          - X: 输入秘密共享的特征矩阵
          - device: 预测结果存放的PYU设备
         """
-        assert isinstance(X, SPUObject) and X.device == self.spu, "X must be on SPU"
-        if device is None:
-            device = self.active_party
-        y = self._forward(X).to(device)
+        assert isinstance(X, FedNdarray), "X must be a FedNdarray"
         assert isinstance(device,PYU), 'predictions must be moved to a PYU device'
+
+        if isinstance(self.w, SPUObject):
+            w = self.dispatch_weight()
+        elif isinstance(self.w, FedNdarray):
+            w = self.w
+        z1 = self.company(lambda X, w: X @ w)(X.partitions[self.company], w.partitions[self.company]).to(device)
+        z2 = self.partner(lambda X, w: X @ w)(X.partitions[self.partner], w.partitions[self.partner]).to(device)
+        
+        if self.approx:
+            activate_fn = approx_sigmoid
+        else:
+            if self.out_features == 1:
+                activate_fn = sigmoid
+            else:
+                activate_fn = softmax
+            
+        y = device(lambda a, b: activate_fn(a + b))(z1, z2)
+
         def to_int_labels(logits : np.ndarray):
             #将logit转化为整数标签
             if logits.shape[1] == 1:
@@ -97,7 +120,7 @@ class SSLR:
             return (1 - lambda_) * w - (lr/batch_size) * (X.transpose() @ grad)
         self.w = self.spu(grad_desc)(self.lambda_, self.w, X, grad)
 
-    def fit(self, X : SPUObject, y : SPUObject | PYUObject, X_test : SPUObject | None = None, y_test : PYUObject | None = None, batch_size = 64, val_steps = 1, n_epochs = 10, lr = 0.1):
+    def fit(self, X : SPUObject, y : SPUObject | PYUObject, X_test : FedNdarray | None = None, y_test : PYUObject | None = None, batch_size = 64, val_steps = 1, n_epochs = 10, lr = 0.1, split_col : int = None):
         """
         训练指定轮数
         ## Args:
@@ -109,12 +132,14 @@ class SSLR:
         - val_steps: 每隔多少个step在验证集上评估一次。每更新一次权重算一个step。默认为1。
         - n_epochs: 训练轮数，默认为10。
         - lr: 初始学习率，默认为0.1。学习率会随着迭代次数成反比。
-
+        - split_col: 划分company特征和partner特征的列。左侧是company的特征，右侧是partner的特征。如未提供验证集则必须提供此项。
         ## Returns:
         - accs: 如果提供了验证集，则返回每次在验证集上评估的准确率。
+
+        注意：训练完成后，self.w以明文的形式存储，company和partner各自持有一部分。推理时双方分别将各自的特征与各自的w相乘，然后由标签持有者聚合结果。
         """
         assert isinstance(X, SPUObject) and X.device == self.spu, "X must be on SPU"
-        assert (isinstance(y, SPUObject) and y.device == self.spu) or (isinstance(y, PYUObject) and y.device == self.active_party), "y must be on active_party or SPU"
+        assert (isinstance(y, SPUObject) and y.device == self.spu) or (isinstance(y, PYUObject)), "y must be on active_party PYU or SPU"
         self.train_label_keeper = y.device
         num_samples, self.in_features = sf.reveal(self.spu(np.shape)(X))
         _, self.out_features = sf.reveal(self.train_label_keeper(np.shape)(y))
@@ -122,19 +147,21 @@ class SSLR:
         self.out_features = int(self.out_features)
         self.w = np.zeros((self.in_features, self.out_features),dtype=np.float32)
 
+        assert X_test is not None or split_col is not None, "Either validate set or split col must be provided"
+        self.split_col = split_col if split_col is not None else sf.reveal(X_test.partition_shape()[self.company])[1]
+
         Xs = []
         ys = []
         validate = X_test is not None and y_test is not None
         if validate:
-            assert isinstance(X_test, SPUObject) and X_test.device == self.spu, "X and X_test must be on the same spu"
-            assert isinstance(y_test, PYUObject) and y_test.device == self.active_party, "y_test must be on the active_party"
+            assert isinstance(X_test, FedNdarray), "X_test must be a FedNdarray"
         if not self.approx:
-            assert self.active_party != self.spu, "When approx is False, y must not be on SPU"
+            assert y.device != self.spu, "When approx is False, y must not be on SPU"
         for j in trange(0,num_samples,batch_size):
             batch = min(batch_size,num_samples - j)
             keys = np.arange(j, j + batch)
-            def get_item(X : jnp.ndarray, keys):
-                return X[keys]
+            def get_item(arr : jnp.ndarray, keys):
+                return arr[keys]
             X_batch = self.spu(get_item, static_argnames=['keys'])(X, keys)
             y_batch = self.train_label_keeper(get_item, static_argnames=['keys'])(y, keys)
             Xs.append(X_batch)
@@ -148,7 +175,7 @@ class SSLR:
                 # 学习率随着迭代次数递减
                 self._backward(X, y, y_pred, lr / t)
                 if validate and steps % val_steps == 0:
-                    y_pred = self.predict(X_test)
+                    y_pred = self.predict(X_test, y_test.device)
                     def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
                         y_true = y_true.reshape(-1,1)
                         y_pred = y_pred.reshape(-1,1)
@@ -159,6 +186,7 @@ class SSLR:
                     print(f"Iteration {steps}, Accuracy: {acc:.4f}")
                 steps += 1
 
+        self.w = self.dispatch_weight()
         return accs
 
 
@@ -171,13 +199,13 @@ class SSLR:
             'partner': 'path/to/partner/model'
         }
         '''
-        w1, w2 = self.spu(SS_share,num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER,user_specified_num_returns=2)(self.w)
-        w1 = w1.to(self.company)
-        w2 = w2.to(self.partner)
+        assert isinstance(self.w, FedNdarray), "Weights must be a FedNdarray"
+        w1, w2 = self.w.partitions[self.company], self.w.partitions[self.partner]
         info = {
             'shape' : (self.in_features, self.out_features),
             'lambda_': float(self.lambda_),
-            'approx': bool(self.approx)
+            'approx': bool(self.approx),
+            'save_as' : ext
         }
         def save_model(w : np.ndarray, path : str):
             try:
@@ -196,15 +224,17 @@ class SSLR:
 
     def load(self, paths):
         def load_model(path : str):
-            w = np.load(os.path.join(path, 'weight.npy'))
             info = json.load(open(os.path.join(path, 'info.json'), 'r'))
+            ext = info['save_as']
+            if ext == 'csv':
+                w = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',')
+            else:
+                w = np.load(os.path.join(path, 'weight.npy'))
             return w, info
         w1, info1 = self.company(load_model)(paths['company'])
         w2, info2 = self.partner(load_model)(paths['partner'])
         assert info1 == info2, "Model info mismatch between company and partner"
-        w1 = w1.to(self.spu)
-        w2 = w2.to(self.spu)
-        self.w = self.spu(lambda a, b: a + b)(w1, w2)
+        self.w = load({self.company: w1, self.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
         self.in_features, self.out_features = info1['shape']
         self.lambda_ = info1['lambda_']
         self.approx = info1['approx']
@@ -229,8 +259,9 @@ def SSLR_test(dataset):
     }
 
     train_X, train_y, test_X, test_y = load_dataset(dataset)
+    split_col = train_X.shape[1] // 2
     num_cat = train_y.shape[1] if len(train_y.shape) > 1 else 1
-    test_X = sf.to(company, test_X).to(spu)
+    test_X = load({company : sf.to(company, test_X[:, :split_col]), partner : sf.to(partner, test_X[:, split_col:])})
     test_y = sf.to(company, test_y)
     train_X = sf.to(company, train_X).to(spu)
     train_y = sf.to(company, train_y).to(spu)
@@ -243,7 +274,7 @@ def SSLR_test(dataset):
     },ext='csv')
     plt.plot(accs,label = "SSLR",color = "blue")
 
-    test_X = sf.reveal(test_X)
+    test_X = np.hstack([sf.reveal(test_X.partitions[company]), sf.reveal(test_X.partitions[partner])])
     test_y = sf.reveal(test_y)
     train_X = sf.reveal(train_X)
     train_y = sf.reveal(train_y)
@@ -430,4 +461,4 @@ if __name__ == "__main__":
     # LR_test("mnist")
     # for dataset in ["pima","pcs","uis","gisette","arcene"]:
     #     LR_test(dataset)
-    SSLR_test("risk")
+    SSLR_test("breast")

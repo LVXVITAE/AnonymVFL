@@ -27,9 +27,16 @@ def SS_share(x : jnp.ndarray | int | float) -> tuple[jnp.ndarray | int | float, 
     if isinstance(x, (int,float)):
         x = jnp.array(x)
 
-    x_1 = jax.random.randint(jax.random.PRNGKey(0), x.shape, 0, out_dom)
+    x_1 = jax.random.randint(jax.random.PRNGKey(0), x.shape, -out_dom // 2, out_dom // 2)
     x_2 = x - x_1
     return x_1, x_2
+
+def approx_sigmoid(x : jnp.ndarray):
+    """
+    Compute approximated sigmoid using piecewise function
+    """
+    
+    return jnp.clip(x + 1/2, 0, 1)
 
 def sigmoid(x : jnp.ndarray) -> jnp.ndarray:
     """
