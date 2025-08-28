@@ -205,13 +205,18 @@ class MPCInitializer:
     目前仅支持仿真模式
     根据secretflow的文档，仅修改此处的初始化方式而几乎无需改动其他源码即可实现分布式部署
     """
-    def __init__(self, mode = 'simulation'):
+    def __init__(self, mode = 'single_sim', ray_head_addr = "", cluster_def = {}):
         self.mode = mode
-        if mode == 'simulation':
+        if mode == 'single_sim':
             sf.init(['company', 'partner', 'coordinator'],
             address='local',
             )
-        self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
+            self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
+        if mode == 'multi_sim':
+            sf.init(['company', 'partner', 'coordinator'],
+            address=ray_head_addr,
+            )
+            self.config = cluster_def
         self.spu = sf.SPU(self.config)
         self.company, self.partner, self.coordinator = sf.PYU('company'), sf.PYU('partner'), sf.PYU('coordinator')
         encoding = {

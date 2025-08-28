@@ -187,6 +187,8 @@ def private_set_intersection(company_data : PYUObject, partner_data : PYUObject,
     键值应处理为`list[str]`类型，私有特征应为32位浮点数`np.ndarray`，公开特征应为`None`或整形`np.ndarray`。
     ## Returns:
      - R_I: 交集结果，包含Company和Partner的私有特征分片和公开特征
+    
+    注意：运行PSI之后Company特征在共享分片左侧，Partner特征在共享分片右侧
     """
     pyu_devices = (company_data.device, partner_data.device)
     psi_company = PSICompany(company_data, pyu_devices, heu_devices)

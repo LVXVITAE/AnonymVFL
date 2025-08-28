@@ -21,7 +21,6 @@ class SSLR:
             'spu': spu,
             'company': company,
             'partner': partner,
-            'coordinator': coordinator, # 如使用两方计算协议此字段可忽略
            }
 
          - lambda_: l2正则化参数，默认为0。
@@ -36,7 +35,7 @@ class SSLR:
         self.company = devices['company']
         self.partner = devices['partner']
 
-    def _forward(self, X : SPUObject):
+    def _forward(self, X : SPUObject) -> SPUObject | PYUObject:
         """
         ## Args:
          - X: 输入秘密共享的特征矩阵
@@ -65,10 +64,10 @@ class SSLR:
         w = load({self.company: w1, self.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
         return w
 
-    def predict(self, X : FedNdarray, device : PYU):
+    def predict(self, X : FedNdarray, device : PYU)  -> PYUObject:
         """
         ## Args:
-         - X: 输入秘密共享的特征矩阵
+         - X: 输入纵向划分的特征矩阵
          - device: 预测结果存放的PYU设备
         """
         assert isinstance(X, FedNdarray), "X must be a FedNdarray"
