@@ -135,7 +135,6 @@ def main(args : argparse.Namespace):
         y_test = None
 
     from LR import SSLR
-    import matplotlib.pyplot as plt
 
     model = SSLR(devices, approx=args.share_y)
     accs = model.fit(X_train, y_train, X_test, y_test, n_epochs=args.n_epochs, batch_size=args.batch_size, val_steps=args.val_steps, lr=args.lr)
@@ -144,9 +143,6 @@ def main(args : argparse.Namespace):
             'company': args.path_to_company_model_save_dir,
             'partner': args.path_to_partner_model_save_dir,
         },ext='csv')
-    plt.plot(accs,label = "SSLR",color = "blue")
-    company(plt.savefig)(args.path_to_company_model_save_dir + '/accuracy_curve.png')
-    partner(plt.savefig)(args.path_to_partner_model_save_dir + '/accuracy_curve.png')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="AnonymVFL",description="运行匿踪对齐和匿踪学习")
