@@ -182,7 +182,7 @@ class SSLR:
                     acc = y_test.device(compute_accuracy)(y_test, y_pred)
                     acc = sf.reveal(acc)
                     accs.append(acc)
-                    print(f"Iteration {steps}, Accuracy: {acc:.4f}")
+                    print(f"Step {steps}, Accuracy: {acc:.4f}")
                 steps += 1
 
         self.w = self.dispatch_weight()
