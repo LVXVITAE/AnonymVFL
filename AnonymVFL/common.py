@@ -180,7 +180,16 @@ def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.nda
         X = all.drop(columns=["id", "y"]).to_numpy()
         y = all["y"].to_numpy().reshape(-1,1)
         train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
-
+        
+    elif dataset == "shop":
+        dir_path = os.path.join("Datasets", "data", "data")
+        guest = pd.read_csv(os.path.join(dir_path, "guest_train.csv"))
+        host = pd.read_csv(os.path.join(dir_path, "host_train.csv"))
+        all = pd.concat([host, guest], join = 'inner', axis = 1)
+        X = all.drop(columns=["id", "Revenue"]).to_numpy()
+        y = all["Revenue"].to_numpy().reshape(-1,1)
+        train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
+    
     return train_X, train_y, test_X, test_y
 
 def Singleton(cls):   #这是一个函数，目的是要实现一个“装饰器”，而且是对类型的装饰器
@@ -213,6 +222,12 @@ class MPCInitializer:
             )
             self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
         if mode == 'multi_sim':
+            sf.init(['company', 'partner', 'coordinator'],
+            address=ray_head_addr,
+            )
+            self.config = cluster_def
+        if mode == 'multi_distributed':
+            # 分布式模式，每个节点只初始化自己需要的角色
             sf.init(['company', 'partner', 'coordinator'],
             address=ray_head_addr,
             )

@@ -64,11 +64,12 @@ class SSLR:
         w = load({self.company: w1, self.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
         return w
 
-    def predict(self, X : FedNdarray, device : PYU)  -> PYUObject:
+    def predict(self, X : FedNdarray, device : PYU, threshold: float = 0.33)  -> PYUObject:
         """
         ## Args:
          - X: 输入纵向划分的特征矩阵
          - device: 预测结果存放的PYU设备
+         - threshold: 分类阈值，默认0.5，对于不平衡数据可以调低
         """
         assert isinstance(X, FedNdarray), "X must be a FedNdarray"
         assert isinstance(device,PYU), 'predictions must be moved to a PYU device'
@@ -90,13 +91,13 @@ class SSLR:
             
         y = device(lambda a, b: activate_fn(a + b))(z1, z2)
 
-        def to_int_labels(logits : np.ndarray):
-            #将logit转化为整数标签
+        def to_int_labels(logits : np.ndarray, threshold):
+            #将logit转化为整数标签，使用自定义阈值
             if logits.shape[1] == 1:
-                return np.round(logits)
+                return (logits > threshold).astype(int)
             else:
                 return np.argmax(logits, axis=1)
-        y = device(to_int_labels)(y)
+        y = device(to_int_labels, static_argnames=['threshold'])(y, threshold)
 
         return y
 
@@ -167,6 +168,12 @@ class SSLR:
             ys.append(y_batch)
         steps = 0
         accs = []
+        f1s = []
+        fOrs = []
+        finalacc = 0
+        finalf1 = 0
+        finalfOr = 0
+    
         for t in range(1,n_epochs + 1):
             print(f"Epoch {t}")
             for X,y in tqdm((zip(Xs, ys))):
@@ -178,14 +185,67 @@ class SSLR:
                     def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
                         y_true = y_true.reshape(-1,1)
                         y_pred = y_pred.reshape(-1,1)
+                        # 调试输出：查看y_true和y_pred的实际值
+                        # print(f"DEBUG - y_true unique values: {np.unique(y_true)}")
+                        # print(f"DEBUG - y_pred unique values: {np.unique(y_pred)}")
+                        # print(f"DEBUG - y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
+                        # print(f"DEBUG - y_true first 100 values: {y_true[:100].flatten()}")
+                        # print(f"DEBUG - y_pred first 100 values: {y_pred[:100].flatten()}")
                         return np.mean(y_true == y_pred)
+                    def compute_f1(y_true : np.ndarray, y_pred : np.ndarray):
+                        y_true = y_true.reshape(-1,1)
+                        y_pred = y_pred.reshape(-1,1)
+                        # print(f"DEBUG F1 - y_true range: [{np.min(y_true)}, {np.max(y_true)}]")
+                        # print(f"DEBUG F1 - y_pred range: [{np.min(y_pred)}, {np.max(y_pred)}]")
+                        # 使用更安全的比较方式，处理浮点数
+                        tp = np.sum((np.abs(y_true - 0.0) < 1e-6) & (np.abs(y_pred - 0.0) < 1e-6))
+                        fp = np.sum((np.abs(y_true - 1.0) < 1e-6) & (np.abs(y_pred - 0.0) < 1e-6))
+                        fn = np.sum((np.abs(y_true - 0.0) < 1e-6) & (np.abs(y_pred - 1.0) < 1e-6))
+                        # print(f"DEBUG F1 - TP: {tp}, FP: {fp}, FN: {fn}")
+                        # F1分数
+                        precision = tp / (tp + fp + 1e-8)  # 添加小数避免除零
+                        recall = tp / (tp + fn + 1e-8)
+                        f1 = 2 * (precision * recall) / (precision + recall + 1e-8)  
+                        return f1
+                    
+                    def compute_fOr(y_true : np.ndarray, y_pred : np.ndarray):
+                        y_true = y_true.reshape(-1,1)
+                        y_pred = y_pred.reshape(-1,1)
+                        # print(f"DEBUG FOR - y_true range: [{np.min(y_true)}, {np.max(y_true)}]")
+                        # print(f"DEBUG FOR - y_pred range: [{np.min(y_pred)}, {np.max(y_pred)}]")
+                        tp = np.sum((y_true == 0) & (y_pred == 0))
+                        fp = np.sum((y_true == 1) & (y_pred == 0))
+                        fn = np.sum((y_true == 0) & (y_pred == 1))
+                        tn = np.sum((y_true == 1) & (y_pred == 1))
+                        # print(f"DEBUG FOR - TP: {tp}, FP: {fp}, FN: {fn}, TN: {tn}")
+                        # 误漏率（False omission rate）指模型预测的全部阴性例数中实际患病者所占比例，反映了模型发现阴性者中患病的情况。
+                        fOr = fn / (fn + tn + 1e-8)
+                        return fOr
+                    
                     acc = y_test.device(compute_accuracy)(y_test, y_pred)
+                    f1 = y_test.device(compute_f1)(y_test, y_pred)
+                    fOr = y_test.device(compute_fOr)(y_test, y_pred)
                     acc = sf.reveal(acc)
+                    f1 = sf.reveal(f1)
+                    fOr = sf.reveal(fOr)
                     accs.append(acc)
-                    print(f"Step {steps}, Accuracy: {acc:.4f}")
+                    f1s.append(f1)
+                    fOrs.append(fOr)
+                    if t == n_epochs:
+                        if acc > finalacc:
+                            finalacc = acc
+                        if f1 > finalf1:
+                            finalf1 = f1
+                        if fOr < finalfOr:
+                            finalfOr = fOr
+                    print(f"Step {steps}, Accuracy: {acc:.4f}, F1: {f1:.4f}, FOR: {fOr:.4f}")
                 steps += 1
 
         self.w = self.dispatch_weight()
+        print(f"\n📈 最终验证结果:")
+        print(f"   • 最终准确率: {finalacc:.4f}")
+        print(f"   • 最终F1分数: {finalf1:.4f}")
+        print(f"   • 最终误漏率: {finalfOr:.4f}")
         return accs
 
 
@@ -460,4 +520,5 @@ if __name__ == "__main__":
     # LR_test("mnist")
     # for dataset in ["pima","pcs","uis","gisette","arcene"]:
     #     LR_test(dataset)
-    SSLR_test("breast")
+    # SSLR_test("breast")
+    SSLR_test("shop")

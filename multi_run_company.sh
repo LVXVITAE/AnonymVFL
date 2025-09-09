@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Company节点 - Ray Head节点
+# 项目路径
+PROJ_PATH="/home/dxn/mobile_project2/AnonymVFL"
+cd ${PROJ_PATH}
+
+# 启动Ray Head节点
+echo "Starting Ray Head node (Company)..."
+ray start --head --port=20001 --num-cpus=8 --resources='{"company": 10}' --node-ip-address=210.28.133.104
+
+echo "Ray Head node started. Other nodes can connect using: 210.28.133.104:20001"
+echo "Waiting for other nodes to join..."
+sleep 10
+
+# 运行Company节点的联邦学习任务
+python3 ${PROJ_PATH}/AnonymVFL/run.py \
+    --mode="multi_distributed" \
+    --party="company" \
+    --ray_head_addr="210.28.133.104:20001" \
+    --company_spu_addr="210.28.133.104:11001" \
+    --partner_spu_addr="210.28.133.105:11002" \
+    --coordinator_spu_addr="210.28.133.106:11003" \
+    --run_psi=True \
+    --path_to_company_train_dataset="${PROJ_PATH}/Datasets/data/data/host_train.csv" \
+    --path_to_partner_train_dataset="${PROJ_PATH}/Datasets/data/data/guest_train.csv" \
+    --path_to_company_share="${PROJ_PATH}/company_share.csv" \
+    --path_to_partner_share="${PROJ_PATH}/partner_share.csv" \
+    --share_y=False \
+    --path_to_company_val_dataset="${PROJ_PATH}/Datasets/data/data/host_test.csv" \
+    --path_to_partner_val_dataset="${PROJ_PATH}/Datasets/data/data/guest_test.csv" \
+    --model="SSLR" \
+    --n_epochs=10 \
+    --batch_size=1024 \
+    --val_steps=1 \
+    --lr=0.1 \
+    --path_to_company_model_save_dir="${PROJ_PATH}/models/lr_company" \
+    --path_to_partner_model_save_dir="${PROJ_PATH}/models/lr_partner"
+
+# 训练完成后保持Ray集群运行
+echo "Training completed. Ray cluster is still running..."
+echo "Press Ctrl+C to stop the Ray cluster"
+while true; do
+    sleep 60
+done

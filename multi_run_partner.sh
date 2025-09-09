@@ -1,8 +1,26 @@
+#!/bin/bash
+
+# Partner节点
 # 项目路径
 PROJ_PATH="/home/dxn/mobile_project2/AnonymVFL"
 cd ${PROJ_PATH}
+
+# 连接到Ray集群
+echo "Connecting to Ray cluster..."
+ray start --address=210.28.133.104:20001 --num-cpus=8 --resources='{"partner": 10}' --node-ip-address=210.28.133.105
+
+echo "Connected to Ray cluster as Partner node"
+echo "Waiting for coordinator and starting federated learning..."
+sleep 5
+
+# 运行Partner节点的联邦学习任务
 python3 ${PROJ_PATH}/AnonymVFL/run.py \
-    --mode="single_sim" \
+    --mode="multi_distributed" \
+    --party="partner" \
+    --ray_head_addr="210.28.133.104:20001" \
+    --company_spu_addr="210.28.133.104:11001" \
+    --partner_spu_addr="210.28.133.105:11002" \
+    --coordinator_spu_addr="210.28.133.106:11003" \
     --run_psi=True \
     --path_to_company_train_dataset="${PROJ_PATH}/Datasets/data/data/host_train.csv" \
     --path_to_partner_train_dataset="${PROJ_PATH}/Datasets/data/data/guest_train.csv" \
@@ -18,3 +36,6 @@ python3 ${PROJ_PATH}/AnonymVFL/run.py \
     --lr=0.1 \
     --path_to_company_model_save_dir="${PROJ_PATH}/models/lr_company" \
     --path_to_partner_model_save_dir="${PROJ_PATH}/models/lr_partner"
+
+echo "Partner training completed. Disconnecting from Ray cluster..."
+ray stop
