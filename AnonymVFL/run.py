@@ -11,27 +11,29 @@ def main(args : argparse.Namespace):
         company_spu_ip, company_spu_port = args.company_spu_addr.split(':')
         partner_spu_ip, partner_spu_port = args.partner_spu_addr.split(':')
         coordinator_spu_ip, coordinator_spu_port = args.coordinator_spu_addr.split(':')
-        cluster_def['nodes'] = [
-            {
-                'party': 'company',
-                # Please choose an unused port.
-                'address': args.company_spu_addr,
-                'listen_addr': f'0.0.0.0:{company_spu_port}'
-            },
-            {
-                'party': 'partner',
-                # Please choose an unused port.
-                'address': args.partner_spu_addr,
-                'listen_addr': f'0.0.0.0:{partner_spu_port}'
-            },
-            {
-                'party': 'coordinator',
-                # Please choose an unused port.
-                'address': args.coordinator_spu_addr,
-                'listen_addr': f'0.0.0.0:{coordinator_spu_port}'
-            }
-        ]
-        cluster_def['runtime_config'] = {}
+        cluster_def = {
+            'nodes': [
+                {
+                    'party': 'company',
+                    # Please choose an unused port.
+                    'address': args.company_spu_addr,
+                    'listen_addr': f'0.0.0.0:{company_spu_port}'
+                },
+                {
+                    'party': 'partner',
+                    # Please choose an unused port.
+                    'address': args.partner_spu_addr,
+                    'listen_addr': f'0.0.0.0:{partner_spu_port}'
+                },
+                {
+                    'party': 'coordinator',
+                    # Please choose an unused port.
+                    'address': args.coordinator_spu_addr,
+                    'listen_addr': f'0.0.0.0:{coordinator_spu_port}'
+                }
+            ], 
+            'runtime_config' : {'protocol': 3, 'field': 3}
+        }
     mpc_init = MPCInitializer(args.mode, args.ray_head_addr,cluster_def)
     company, partner, coordinator = mpc_init.company, mpc_init.partner, mpc_init.coordinator
     spu = mpc_init.spu
