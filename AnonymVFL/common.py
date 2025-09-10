@@ -211,7 +211,10 @@ class MPCInitializer:
             sf.init(['company', 'partner', 'coordinator'],
             address='local',
             )
-            self.config = sf.utils.testing.cluster_def(parties=['company', 'partner', 'coordinator'])
+            self.config = sf.utils.testing.cluster_def(
+                parties=['company', 'partner', 'coordinator'],
+                runtime_config=cluster_def['runtime_config'] if 'runtime_config' in cluster_def else None
+            )
         if mode == 'multi_sim':
             sf.init(['company', 'partner', 'coordinator'],
             address=ray_head_addr,
