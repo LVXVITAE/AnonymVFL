@@ -127,7 +127,14 @@ class MeanSquare:
         Computes the hessian of the mean square loss.
         """
         return 2 / y_true.shape[0]
-    
+
+def to_int_labels(logits : np.ndarray):
+    #将logit转化为整数标签
+    if logits.shape[1] == 1:
+        return np.round(logits)
+    else:
+        return np.argmax(logits, axis=1)
+
 # 加载数据集，开发测试用
 def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
     """
@@ -177,9 +184,14 @@ def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.nda
         guest = pd.read_csv(os.path.join(dir_path, "breast_hetero_guest.csv"))
         host = pd.read_csv(os.path.join(dir_path, "breast_hetero_host.csv"))
         all = pd.concat([host, guest], join = 'inner', axis = 1)
-        X = all.drop(columns=["id", "y"]).to_numpy()
-        y = all["y"].to_numpy().reshape(-1,1)
-        train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
+        train_X = all.drop(columns=["id", "y"]).to_numpy()
+        train_y = all["y"].to_numpy().reshape(-1,1)
+
+        guest = pd.read_csv(os.path.join(dir_path, "breast_hetero_guest_test.csv"))
+        host = pd.read_csv(os.path.join(dir_path, "breast_hetero_host_test.csv"))
+        all = pd.concat([host, guest], join = 'inner', axis = 1)
+        test_X = all.drop(columns=["id", "y"]).to_numpy()
+        test_y = all["y"].to_numpy().reshape(-1,1)        
 
     return train_X, train_y, test_X, test_y
 

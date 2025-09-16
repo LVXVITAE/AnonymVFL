@@ -1,6 +1,7 @@
 from SharedVariable import SharedVariable
 import numpy as np
-from tqdm import trange, tqdm
+from tqdm import trange
+from tqdm.contrib import tzip
 from common import out_dom
 import jax.numpy as jnp
 import secretflow as sf
@@ -8,7 +9,7 @@ from secretflow.device import SPUObject, PYUObject
 from secretflow import SPU, PYU
 from secretflow.data import FedNdarray, PartitionWay
 from secretflow.data.ndarray import load
-from common import approx_sigmoid, sigmoid, softmax, load_dataset
+from common import approx_sigmoid, sigmoid, softmax, load_dataset,to_int_labels
 import os, json
 
 class SSLR:
@@ -90,12 +91,6 @@ class SSLR:
             
         y = device(lambda a, b: activate_fn(a + b))(z1, z2)
 
-        def to_int_labels(logits : np.ndarray):
-            #将logit转化为整数标签
-            if logits.shape[1] == 1:
-                return np.round(logits)
-            else:
-                return np.argmax(logits, axis=1)
         y = device(to_int_labels)(y)
 
         return y
@@ -169,7 +164,7 @@ class SSLR:
         accs = []
         for t in range(1,n_epochs + 1):
             print(f"Epoch {t}")
-            for X,y in tqdm((zip(Xs, ys))):
+            for X,y in tzip(Xs, ys):
                 y_pred = self._forward(X)
                 # 学习率随着迭代次数递减
                 self._backward(X, y, y_pred, lr / t)
