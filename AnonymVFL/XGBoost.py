@@ -244,6 +244,7 @@ class Tree:
         - loss_d: 当前节点的目标损失的分母
         """
         indices = [(j, k) for j in range(len(G_L)) for k in range(len(G_L[j]))]
+        print("Selecting best split ...")
         def gain(g_L : jnp.ndarray, g_R : jnp.ndarray, h_L : jnp.ndarray, h_R : jnp.ndarray, loss_n : jnp.ndarray, loss_d : jnp.ndarray, lambda_ : float) -> jnp.ndarray:
             """
             计算增益
@@ -467,10 +468,10 @@ class Tree:
                     right_results = search_tree(X_R, cur.right)
                     # 将左子树和右子树的结果合并
                     overall_results = [-1] * num_samples
-                    for i, idx in enumerate(left_indices):
-                        overall_results[idx] = left_results[i]
-                    for i, idx in enumerate(right_indices):
-                        overall_results[idx] = right_results[i]
+                    for idx, res in zip(left_indices, left_results):
+                        overall_results[idx] = res
+                    for idx, res in zip(right_indices,right_results):
+                        overall_results[idx] = res
                     return overall_results
 
             elif mode == 'train':
@@ -497,10 +498,10 @@ class Tree:
                     right_results = search_tree(X_R, cur.right)
                     # 将左子树和右子树的结果合并
                     overall_results = [-1] * num_samples
-                    for i, idx in enumerate(left_indices):
-                        overall_results[idx] = left_results[i]
-                    for i, idx in enumerate(right_indices):
-                        overall_results[idx] = right_results[i]
+                    for idx, res in zip(left_indices, left_results):
+                        overall_results[idx] = res
+                    for idx, res in zip(right_indices,right_results):
+                        overall_results[idx] = res
                     return overall_results
             else:
                 raise ValueError("Mode must be 'train' or 'eval'.")
@@ -598,6 +599,9 @@ class SSXGBoost:
         validate = isinstance(X_test, FedNdarray) and isinstance(y_test, PYUObject)
 
         y_pred = self.train_label_keeper(jnp.zeros_like)(y)
+
+        train_accs = []
+        test_accs = []
         for i in range(self.n_estimators):
             tree = Tree(self.devices, self.lambda_, self.max_depth, self.div)
             tree.fit(X, y, y_pred, buckets, self.SSQuantiles, self.FedQuantiles)
@@ -619,9 +623,10 @@ class SSXGBoost:
             y_pred_train = self.train_label_keeper(to_int_labels)(y_pred_train)
             train_acc = self.train_label_keeper(compute_accuracy)(y, y_pred_train)
             train_acc = sf.reveal(train_acc)
-            print(f"==== Iteration {i} ====\nTrain Loss: {train_loss}, Accuracy: {train_acc}")
+            train_accs.append(train_acc)
+            print(f"==== Iteration {i} ====\nTrain Loss: {train_loss:.4f}, Accuracy: {train_acc:.4f}")
             if validate:
-                
+                print("Validating test dataset...")
                 y_pred_test = self._forward(X_test).to(y_test.device)
                 y_pred_test = y_test.device(sigmoid)(y_pred_test) if self.out_features == 1 else y_test.device(softmax)(y_pred_test)
 
@@ -632,7 +637,10 @@ class SSXGBoost:
 
                 test_acc = y_test.device(compute_accuracy)(y_test, y_pred_test)
                 test_acc = sf.reveal(test_acc)
-                print(f"Test Loss: {test_loss}, Accuracy: {test_acc}")
+                test_accs.append(test_acc)
+                print(f"Test Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}")
+
+        return train_accs, test_accs
 
 import numpy as np
 from common import load_dataset
@@ -708,8 +716,8 @@ def SSXGBoost_test(dataset):
 
     # 将 train_X 每列等频分桶为 k+1 份，并计算 k 个分位点
     split_index = train_X.shape[1] // 2
-    Quantiles1, _, buckets_labels1 = quantize_buckets(train_X[:, :split_index], k=50)
-    Quantiles2, _, buckets_labels2 = quantize_buckets(train_X[:, split_index:], k=50)
+    Quantiles1, _, buckets_labels1 = quantize_buckets(train_X[:, :split_index], k=20)
+    Quantiles2, _, buckets_labels2 = quantize_buckets(train_X[:, split_index:], k=20)
     buckets = recover_buckets(np.hstack((buckets_labels1, buckets_labels2)))
 
     Quantiles1 = sf.to(company, Quantiles1)
@@ -717,21 +725,28 @@ def SSXGBoost_test(dataset):
     FedQuantiles = load({company: Quantiles1, partner: Quantiles2}, partition_way=PartitionWay.HORIZONTAL)
 
     model = SSXGBoost(devices={'spu': spu, 'company': company, 'partner': partner}, 
-                      max_depth=3, n_estimators=4, div=False)
+                      max_depth=2, n_estimators=10, div=False)
 
     # 然后把训练集 secret‐share 到 SPU
     train_X = sf.to(company, np.array(train_X)).to(spu)
     train_y = sf.to(company, np.array(train_y,dtype=np.float32))
 
-    test_X1, test_X2 = test_X[:, split_index:], test_X[:, :split_index]
+    test_X1, test_X2 = test_X[:, :split_index], test_X[:, split_index:]
     test_X1 = sf.to(company, test_X1)
     test_X2 = sf.to(partner, test_X2)
     test_X = load({company: test_X1, partner: test_X2})
     test_y = sf.to(company, np.array(test_y,dtype=np.float32))
 
-    model.fit(train_X, train_y, buckets, FedQuantiles,X_test=test_X, y_test=test_y)
-
-    test_X = sf.reveal(test_X)
+    train_accs, test_accs = model.fit(train_X, train_y, buckets, FedQuantiles,X_test=test_X, y_test=test_y)
+    
+    import matplotlib.pyplot as plt
+    plt.plot(train_accs,label = "train_acc")
+    plt.plot(test_accs,label = "test_acc")
+    plt.xlabel("nEstimators")
+    plt.legend()
+    plt.title(f"SSXGBoost_{dataset}")
+    plt.savefig(f"SSXGBoost_{dataset}.png")
+    # test_X = sf.reveal(test_X)
 
     # import xgboost as xgb
     # model = xgb.XGBClassifier()
