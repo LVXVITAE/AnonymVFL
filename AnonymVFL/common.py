@@ -57,6 +57,30 @@ def cross_entropy(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
     """
     return -jnp.sum(y_true * jnp.log(y_pred + 1e-12))
 
+class ApproxSigmoidCrossEntropy:
+    @staticmethod
+    def loss(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
+        """
+        Computes the sigmoid cross-entropy loss.
+        """
+        y_pred = approx_sigmoid(z)
+        return cross_entropy(y_true, y_pred)
+    
+    @staticmethod
+    def grad(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
+        """
+        Computes the gradient of the sigmoid cross-entropy loss.
+        """
+        y_pred = approx_sigmoid(z)
+        return y_pred - y_true
+    @staticmethod
+    def hess(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
+        """
+        Computes the hessian of the sigmoid cross-entropy loss.
+        """
+        y_pred = approx_sigmoid(z)
+        return y_pred * (1.0 - y_pred)
+
 class SigmoidCrossEntropy:
     @staticmethod
     def loss(y_true : jnp.ndarray, z : jnp.ndarray) -> jnp.ndarray:
@@ -105,14 +129,20 @@ class SoftmaxCrossEntropy:
         """
         y_pred = softmax(z)
         return y_pred * (1.0 - y_pred)
-    
+
+def mean_square_error(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
+    """
+    Computes the mean square error loss.
+    """
+    return jnp.mean((y_true - y_pred) ** 2)
+
 class MeanSquare:
     @staticmethod
     def loss(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
         """
         Computes the mean square loss.
         """
-        return jnp.mean((y_true - y_pred) ** 2)
+        return mean_square_error(y_true, y_pred)
 
     @staticmethod
     def grad(y_true : jnp.ndarray, y_pred : jnp.ndarray) -> jnp.ndarray:
@@ -134,6 +164,11 @@ def to_int_labels(logits : np.ndarray):
         return np.round(logits)
     else:
         return np.argmax(logits, axis=1)
+    
+def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
+    y_true = y_true.reshape(-1,1)
+    y_pred = y_pred.reshape(-1,1)
+    return np.mean(y_true == y_pred)
 
 # 加载数据集，开发测试用
 def load_dataset(dataset : str) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:

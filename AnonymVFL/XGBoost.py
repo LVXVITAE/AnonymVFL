@@ -1,8 +1,7 @@
-# 目前xgboost仅可以跑通，部分算法细节可能还有一些错误和不完善的地方
-from matplotlib.pylab import f
+import numpy as np
 import secretflow as sf
 import jax.numpy as jnp
-from common import sigmoid, SigmoidCrossEntropy, SoftmaxCrossEntropy, softmax, to_int_labels, cross_entropy
+from common import sigmoid, approx_sigmoid, SigmoidCrossEntropy, ApproxSigmoidCrossEntropy, SoftmaxCrossEntropy, MeanSquare, softmax, to_int_labels, cross_entropy, mean_square_error, compute_accuracy
 from secretflow.device.device.spu import SPUCompilerNumReturnsPolicy
 from secretflow.device import SPUObject, PYUObject
 from secretflow import SPU, PYU
@@ -36,7 +35,7 @@ class Leaf:
         self.num = num
 
 class Tree:
-    def __init__(self, devices : dict, lambda_ : float = 1e-5, max_depth : int = 3, div : bool =False):
+    def __init__(self, devices : dict, lambda_ : float = 1e-5, max_depth : int = 3, div : bool =False, mission = 'Classification'):
         """
         初始化树
         ## Args:
@@ -55,13 +54,14 @@ class Tree:
         self.lambda_ : float = lambda_
         self.div : bool = div
         # 叶子权重列表，存储每个叶子节点的权重
-        self.leaf_weights : list[SPUObject] = []
+        self.leaf_weights = []
 
         self.company : PYU = devices['company']
         self.partner : PYU = devices['partner']
         self.spu : SPU = devices['spu']
+        self.mission = mission
 
-    def fit(self, X : SPUObject, y : PYUObject, y_pred : PYUObject, buckets : list[list[jnp.ndarray]], SSQuantiles : SPUObject, FedQuantiles : FedNdarray):
+    def fit(self, X : SPUObject, y : PYUObject | SPUObject, y_pred : PYUObject | SPUObject, buckets : np.ndarray, FedQuantiles : FedNdarray):
         """
         ## Args:
          - X: 秘密共享的输入特征
@@ -69,9 +69,8 @@ class Tree:
          - y_pred: 明文预测标签， 由label_holder持有
          - buckets: 桶列表（公开）。每个元素bucket_j是特征j的桶列表。bucket_j中的每个桶是一个一维数组，表示桶内元素在X中的索引。
         """
-        self.train_label_keeper : PYU = y.device
+        self.train_label_keeper : PYU|SPU = y.device
         assert X.device == self.spu, "X must be on SPU of the model."
-        self.SSQuantiles : SPUObject = SSQuantiles
         self.FedQuantiles : FedNdarray = FedQuantiles
         
         self.buckets = buckets
@@ -82,22 +81,27 @@ class Tree:
         _, self.out_features = sf.reveal(self.train_label_keeper(jnp.shape)(y))
         self.in_features = int(self.in_features)
         self.out_features = int(self.out_features)
-
-        loss_fn = SigmoidCrossEntropy if self.out_features == 1 else SoftmaxCrossEntropy
-        
         # 生成指示向量。指示向量是一个01向量，1表示该数据属于本树节点
         def generate_indicator(X : jnp.ndarray) -> jnp.ndarray:
             return jnp.ones((X.shape[0], 1), dtype=int)
         s = self.spu(generate_indicator)(X)
         #计算一阶二阶梯度
-        def grad_hessian(y : jnp.ndarray, y_pred : jnp.ndarray, loss_fn : SigmoidCrossEntropy | SoftmaxCrossEntropy) -> tuple[jnp.ndarray, jnp.ndarray]:
-            g = loss_fn.grad(y, y_pred)
-            h = loss_fn.hess(y, y_pred)
-            return g, h
-        g, h = self.train_label_keeper(grad_hessian, num_returns=2)(y, y_pred, loss_fn)
-        g = g.to(self.spu)
-        h = h.to(self.spu)
+        if self.mission == 'Classification':
+            if self.out_features == 1:
+                if self.train_label_keeper == self.spu:
+                    loss_fn = ApproxSigmoidCrossEntropy()
+                else:
+                    loss_fn = SigmoidCrossEntropy()  
+            else: 
+                loss_fn = SoftmaxCrossEntropy()
+        elif self.mission == 'Regression':
+            loss_fn = MeanSquare()
+
+        g = self.train_label_keeper(loss_fn.grad)(y, y_pred).to(self.spu)
+        h = self.train_label_keeper(loss_fn.hess)(y, y_pred).to(self.spu)
+        self.train_pred = 0.0
         self.root = self._build_tree(g, h, s, 0)
+        self.leaf_weights = self.spu(lambda x: jnp.array(x))(self.leaf_weights)
         return
     
     def __reveal_list(self, arr : list):
@@ -108,7 +112,7 @@ class Tree:
         arr = self.spu(to_jnp)(arr)
         return sf.reveal(arr)
 
-    def _leaf(self, g_sum : SPUObject, h_sum : SPUObject) -> Leaf:
+    def _leaf(self, g_sum : SPUObject, h_sum : SPUObject, s : SPUObject) -> Leaf:
         """
         计算叶子节点的权重。目前只实现了除法版本，尚未实现优化算法版本。
         ## Args:
@@ -133,7 +137,11 @@ class Tree:
         #             w -= lr * (h_sum * w + g_sum)
         #         return w
         #     weight=spu(leaf_weight_opt)(g_sum, h_sum)
+
         self.leaf_weights.append(weight)    # 在叶子权重列表中添加新叶子权重
+        def update_pred(pred : jnp.ndarray, weight : jnp.ndarray, s : jnp.ndarray):
+            return pred + weight * s
+        self.train_pred = self.spu(update_pred)(self.train_pred, weight, s)
         return Leaf(len(self.leaf_weights) - 1)
     def _build_tree(self, g : SPUObject, h : SPUObject, s : SPUObject, depth : int) -> TreeNode | Leaf:
         """
@@ -155,7 +163,7 @@ class Tree:
         g_sum, h_sum = self.spu(gh_sum,num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER, user_specified_num_returns=2)(g, h)
 
         if depth >= self.max_depth:
-            return self._leaf(g_sum, h_sum)
+            return self._leaf(g_sum, h_sum, s)
         
         def loss_fraction(g_sum : jnp.ndarray, h_sum : jnp.ndarray, lambda_ : float) -> tuple[jnp.ndarray, jnp.ndarray]:
             """ 计算当前节点的目标损失的分子和分母"""
@@ -209,8 +217,13 @@ class Tree:
 
             # 大于等于阈值的节点指示向量
             s_R = 1.0 - s_L
-            s_L = sf.to(self.train_label_keeper, s_L).to(self.spu)
-            s_R = sf.to(self.train_label_keeper, s_R).to(self.spu)
+
+            if isinstance(self.train_label_keeper, PYU):
+                s_L = sf.to(self.train_label_keeper, s_L).to(self.spu)
+                s_R = sf.to(self.train_label_keeper, s_R).to(self.spu)
+            elif self.train_label_keeper == self.spu:
+                s_L = sf.to(self.company, s_L).to(self.spu)
+                s_R = sf.to(self.company, s_R).to(self.spu)
 
             def subtree_args(g : jnp.ndarray, h : jnp.ndarray, s : jnp.ndarray, s_L : jnp.ndarray, s_R : jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
                 """
@@ -230,7 +243,7 @@ class Tree:
             node = TreeNode(left=branch_L, right=branch_R, threshold=threshold)
             return node
         else:
-            return self._leaf(g_sum, h_sum)
+            return self._leaf(g_sum, h_sum, s)
 
     def _split(self, G_L : list[list[SPUObject]], G_R : list[list[SPUObject]], H_L : list[list[SPUObject]], H_R : list[list[SPUObject]], loss_n : SPUObject, loss_d : SPUObject) -> tuple[int, int, bool]:
         """
@@ -388,21 +401,6 @@ class Tree:
 
         G, H = [], []
         for buckets_j in tqdm(self.buckets):    # 处理每个属性j的分桶
-            # Each buckets_j are one-hot encoded, secretly shared vectors for a feature, where each row corresponds to a bucket
-
-            # if len(buckets_j) >= (K+1):
-            #     step = len(buckets_j) // (K+1)
-            #     temps = []
-            #     while len(buckets_j) >= step:
-            #         temp = buckets_j[:step]
-            #         # flatten temp into a single list of indices
-            #         temp = [idx for b in temp for idx in b]
-            #         temps.append(sorted(temp))
-            #         buckets_j = buckets_j[step:]
-            #     if len(buckets_j) > 0:
-            #         # If there are remaining buckets, add them as a final bucket
-            #         temps.append(sorted([idx for b in buckets_j for idx in b]))
-            #     buckets_j = temps
             
             G_j, H_j = [], []
 
@@ -414,7 +412,7 @@ class Tree:
             H.append(H_j)
         return G, H
 
-    def forward(self, X : FedNdarray | SPUObject) -> SPUObject:
+    def forward(self, X : FedNdarray) -> SPUObject:
         """
         前向传播，计算每个样本的预测值
         ## Args:
@@ -422,100 +420,59 @@ class Tree:
         ## Returns:
         - PYUObject: 每个样本的预测值，类型为PYUObject
         """
-        if isinstance(X, FedNdarray):
-            Quantiles = self.FedQuantiles
-            mode = 'eval'
-        elif isinstance(X, SPUObject):
-            Quantiles = self.SSQuantiles
-            mode = 'train'
-        else:
-            raise ValueError("X must be either a FedNdarray or a SPUObject.")
-        
+        assert isinstance(X, FedNdarray), "X must be either a FedNdarray."
+        Quantiles = self.FedQuantiles            
+        assert self.company in X.partitions and self.partner in X.partitions, "X must be split by company and partner assigned to this model"
+        assert sf.reveal(X.partition_shape()[self.company])[1] == self.split_index, "Share shape mismatch"
         def search_tree(X : FedNdarray | SPUObject, cur : TreeNode | Leaf) -> list[int]:
 
             def leq(X : jnp.ndarray, j : int, k : int, Quantiles : jnp.ndarray) -> jnp.ndarray:
                 """ 判断X[:, j]是否小于等于当前节点的阈值Quantiles[j, k] """
                 return X[:, j] <= Quantiles[j, k]
             
-            if mode == 'eval':
-                assert self.company in X.partitions and self.partner in X.partitions
-                assert sf.reveal(X.partition_shape()[self.company])[1] == self.split_index
-                num_samples = X.shape[0]
-                if num_samples == 0:
-                    return []
-                if isinstance(cur, Leaf):
-                    return [cur.num] * num_samples
-                elif isinstance(cur, TreeNode):
-                    
-                    j, k = cur.threshold
-                    # 对于Company的特征，交由Company处理；对于Partner的特征，交由Partner处理
-                    if j < self.split_index:
-                        X_c = X.partitions[self.company]
-                        Quantiles_c = Quantiles.partitions[self.company]
-                        Xj_leq_Qjk = self.company(leq)(X_c, j, k, Quantiles_c)
-                    else:
-                        X_p = X.partitions[self.partner]
-                        Quantiles_p = Quantiles.partitions[self.partner]
-                        Xj_leq_Qjk = self.partner(leq)(X_p, j - self.split_index, k, Quantiles_p)
-                    Xj_leq_Qjk = sf.reveal(Xj_leq_Qjk)
-                    # 将X划分为左（小于阈值）右（大于等于阈值）两部分
-                    left_indices = np.where(Xj_leq_Qjk)[0]
-                    right_indices = np.where(~Xj_leq_Qjk)[0]
-                    X_L = X[left_indices]
-                    X_R = X[right_indices]
-                    # 递归搜索左子树和右子树
-                    left_results = search_tree(X_L, cur.left)
-                    right_results = search_tree(X_R, cur.right)
-                    # 将左子树和右子树的结果合并
-                    overall_results = [-1] * num_samples
-                    for idx, res in zip(left_indices, left_results):
-                        overall_results[idx] = res
-                    for idx, res in zip(right_indices,right_results):
-                        overall_results[idx] = res
-                    return overall_results
+            num_samples = X.shape[0]
+            if num_samples == 0:
+                return []
+            if isinstance(cur, Leaf):
+                return [cur.num] * num_samples
+            elif isinstance(cur, TreeNode):
+                
+                j, k = cur.threshold
+                # 对于Company的特征，交由Company处理；对于Partner的特征，交由Partner处理
+                if j < self.split_index:
+                    X_c = X.partitions[self.company]
+                    Quantiles_c = Quantiles.partitions[self.company]
+                    Xj_leq_Qjk = self.company(leq)(X_c, j, k, Quantiles_c)
+                else:
+                    X_p = X.partitions[self.partner]
+                    Quantiles_p = Quantiles.partitions[self.partner]
+                    Xj_leq_Qjk = self.partner(leq)(X_p, j - self.split_index, k, Quantiles_p)
+                Xj_leq_Qjk = sf.reveal(Xj_leq_Qjk)
+                # 将X划分为左（小于阈值）右（大于等于阈值）两部分
+                left_indices = np.where(Xj_leq_Qjk)[0]
+                right_indices = np.where(~Xj_leq_Qjk)[0]
+                X_L = X[left_indices]
+                X_R = X[right_indices]
+                # 递归搜索左子树和右子树
+                left_results = search_tree(X_L, cur.left)
+                right_results = search_tree(X_R, cur.right)
+                # 将左子树和右子树的结果合并
+                overall_results = [-1] * num_samples
+                for idx, res in zip(left_indices, left_results):
+                    overall_results[idx] = res
+                for idx, res in zip(right_indices,right_results):
+                    overall_results[idx] = res
+                return overall_results
 
-            elif mode == 'train':
-                assert X.device == self.spu, "X must be on SPU of the Tree." 
-                num_samples = sf.reveal(self.spu(jnp.shape)(X))[0].item()
-                if num_samples == 0:
-                    return []
-                if isinstance(cur, Leaf):
-                    return [cur.num] * num_samples
-                elif isinstance(cur, TreeNode):
-                    j, k = cur.threshold
-
-                    Xj_leq_Qjk = self.spu(leq)(X, j, k, self.SSQuantiles)
-                    Xj_leq_Qjk = sf.reveal(Xj_leq_Qjk)
-
-                    # 将X划分为左（小于阈值）右（大于等于阈值）两部分
-                    left_indices = np.where(Xj_leq_Qjk)[0]
-                    right_indices = np.where(~Xj_leq_Qjk)[0]
-                    def X_LR(X : jnp.ndarray, left_indices : jnp.ndarray, right_indices : jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-                        return X[left_indices], X[right_indices]
-                    X_L, X_R = self.spu(X_LR, num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER, user_specified_num_returns=2,static_argnames=['left_indices','right_indices'])(X, left_indices, right_indices)
-                    # 递归搜索左子树和右子树
-                    left_results = search_tree(X_L, cur.left)
-                    right_results = search_tree(X_R, cur.right)
-                    # 将左子树和右子树的结果合并
-                    overall_results = [-1] * num_samples
-                    for idx, res in zip(left_indices, left_results):
-                        overall_results[idx] = res
-                    for idx, res in zip(right_indices,right_results):
-                        overall_results[idx] = res
-                    return overall_results
-            else:
-                raise ValueError("Mode must be 'train' or 'eval'.")
-            
         leaves_ids = search_tree(X, self.root)
+        leaves_ids = np.array(leaves_ids)
         # 求预测值
-        w = [self.leaf_weights[leaf_id] for leaf_id in leaves_ids]
-        def ret(w : list[jnp.ndarray]):
-            return jnp.array(w, dtype=jnp.float32).reshape(-1,1)
+        w = self.spu(lambda w, leaf_id : w[leaf_id].reshape(-1,1),static_argnames='leaves_ids')(self.leaf_weights,leaves_ids)
         # 将预测值发送给标签y的持有者
-        return self.spu(ret)(w)
+        return w
 
 class SSXGBoost:
-    def __init__(self, devices : dict, n_estimators = 3, lambda_ = 1e-5, max_depth = 3, div = False):
+    def __init__(self, devices : dict, n_estimators = 3, lambda_ = 1e-5, max_depth = 3, div = False, mission = 'Classification'):
         """
         初始化SSXGBoost模型
         ## Args:
@@ -540,6 +497,7 @@ class SSXGBoost:
         self.spu = devices['spu']
         self.company = devices['company']
         self.partner = devices['partner']
+        self.mission = mission
 
     def _forward(self, X : FedNdarray | SPUObject)-> SPUObject:
         """
@@ -563,19 +521,18 @@ class SSXGBoost:
         - PYUObject: 每个样本的预测标签，类型为PYUObject
         """
         y = self._forward(X).to(device)
-        y = device(sigmoid)(y) if self.out_features == 1 else device(softmax)(y) # 将预测值转换为概率
+        y = device(self.activate_fn)(y)
         # 将概率转换为标签
         y = device(to_int_labels)(y)
         return y
 
-    def fit(self, X : SPUObject, y : PYUObject, buckets : list[list[jnp.ndarray]], FedQuantiles : FedNdarray, X_test : FedNdarray = None, y_test : PYUObject = None):
+    def fit(self, X : SPUObject, y : PYUObject, buckets : np.ndarray, FedQuantiles : FedNdarray, X_test : FedNdarray = None, y_test : PYUObject = None):
         """
         训练SSXGBoost模型
         ## Args:
          - X: 秘密共享的输入特征
          - y: 明文标签， 由label_holder持有
          - buckets: 桶列表（公开）。每个元素bucket_j是特征j的桶列表。bucket_j中的每个桶是一个一维数组，表示桶内元素在X中的索引。
-         - SSQuantiles: 分位点列表（秘密共享）
          - FedQuantiles: 分位点列表（纵向划分）
         """
         assert X.device == self.spu, "X must be on SPU of this model."
@@ -583,13 +540,6 @@ class SSXGBoost:
 
         self.FedQuantiles = FedQuantiles
         assert isinstance(FedQuantiles, FedNdarray) and self.company in FedQuantiles.partitions and self.partner in FedQuantiles.partitions, "FedQuantiles must be a FedNdarray with partitions for both company and partner."
-        def FedQuantiles_to_SSQuantiles(FedQuantiles : FedNdarray) -> SPUObject:
-            Quantiles_c = FedQuantiles.partitions[self.company].to(self.spu)
-            Quantiles_p = FedQuantiles.partitions[self.partner].to(self.spu)
-            Quantiles = self.spu(lambda a, b: jnp.concatenate((a, b), axis=0))(Quantiles_c, Quantiles_p)
-            return Quantiles
-
-        self.SSQuantiles = FedQuantiles_to_SSQuantiles(FedQuantiles)
 
         num_samples, self.in_features = sf.reveal(self.spu(jnp.shape)(X))
         _, self.out_features = sf.reveal(self.train_label_keeper(jnp.shape)(y))
@@ -600,23 +550,33 @@ class SSXGBoost:
 
         y_pred = self.train_label_keeper(jnp.zeros_like)(y)
 
-        train_accs = []
-        test_accs = []
-        for i in range(self.n_estimators):
-            tree = Tree(self.devices, self.lambda_, self.max_depth, self.div)
-            tree.fit(X, y, y_pred, buckets, self.SSQuantiles, self.FedQuantiles)
+        if self.mission == 'Regression':
+            self.activate_fn = lambda x: x
+            loss_fn = mean_square_error
+        elif self.mission == 'Classification':
+            if self.out_features == 1:
+                if self.train_label_keeper == self.spu:
+                    self.activate_fn = approx_sigmoid
+                else:
+                    self.activate_fn = sigmoid
+            else:
+                assert isinstance(self.train_label_keeper,PYU), "For muiti-class classification, secret-sharing labels not supported"
+                self.activate_fn = softmax
+            loss_fn = cross_entropy
 
-            y_t = tree.forward(X).to(self.train_label_keeper)
+        train_accs = []
+        test_accs = []            
+        for i in range(self.n_estimators):
+            tree = Tree(self.devices, self.lambda_, self.max_depth, self.div, self.mission)
+            tree.fit(X, y, y_pred, buckets, self.FedQuantiles)
+
+            y_t = tree.train_pred.to(self.train_label_keeper)
             y_pred = self.train_label_keeper(lambda x, y: x + y)(y_pred, y_t)
             self.trees.append(tree)
-            def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
-                y_true = y_true.reshape(-1,1)
-                y_pred = y_pred.reshape(-1,1)
-                return np.mean(y_true == y_pred)
             
-            y_pred_train = self.train_label_keeper(sigmoid)(y_pred) if self.out_features == 1 else self.train_label_keeper(softmax)(y_pred) # 将预测值转换为概率
+            y_pred_train = self.train_label_keeper(self.activate_fn)(y_pred)
 
-            train_loss = self.train_label_keeper(cross_entropy)(y, y_pred_train)
+            train_loss = self.train_label_keeper(loss_fn)(y, y_pred_train)
             train_loss = sf.reveal(train_loss)
 
             # 将概率转换为标签
@@ -628,9 +588,9 @@ class SSXGBoost:
             if validate:
                 print("Validating test dataset...")
                 y_pred_test = self._forward(X_test).to(y_test.device)
-                y_pred_test = y_test.device(sigmoid)(y_pred_test) if self.out_features == 1 else y_test.device(softmax)(y_pred_test)
+                y_pred_test = y_test.device(self.activate_fn)(y_pred_test)
 
-                test_loss = y_test.device(cross_entropy)(y_test, y_pred_test)
+                test_loss = y_test.device(loss_fn)(y_test, y_pred_test)
                 test_loss = sf.reveal(test_loss)
 
                 y_pred_test = y_test.device(to_int_labels)(y_pred_test)
@@ -641,10 +601,18 @@ class SSXGBoost:
                 print(f"Test Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}")
 
         return train_accs, test_accs
+    
+    def save():
+        # TODO: 存储模型
+        return
+
+    def load():
+        # TODO: 加载模型
+        return
 
 import numpy as np
 from common import load_dataset
-def quantize_buckets(X : np.ndarray, k : int = 50) -> tuple[np.ndarray, list[list[np.ndarray]], np.ndarray]:
+def quantize_buckets(X : np.ndarray, k : int = 50) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """ 将每列等频分桶为 k+1 份，并计算 k 个分位点。在PSI之前调用
     ## Args:
     - X: 输入特征矩阵
@@ -688,9 +656,10 @@ def quantize_buckets(X : np.ndarray, k : int = 50) -> tuple[np.ndarray, list[lis
         buckets.append([g for g in buckets_j])
 
     Quantiles = np.array(Quantiles)
+    buckets = np.array(buckets)
     return Quantiles, buckets, label_matrix
 
-def recover_buckets(label_matrix : np.ndarray) -> list[list[np.ndarray]]:
+def recover_buckets(label_matrix : np.ndarray) -> np.ndarray:
     """ 将标签矩阵恢复为桶列表。在PSI之后调用，因为PSI执行之后X每个元素经过重新排列，每个元素的索引与PSI之前不同。"""
     buckets = []
     label_matrix = label_matrix.T
@@ -701,7 +670,7 @@ def recover_buckets(label_matrix : np.ndarray) -> list[list[np.ndarray]]:
             items_in_buckets = np.where(label_j==i)[0]
             buckets_j.append(items_in_buckets)
         buckets.append(buckets_j)
-    return buckets
+    return np.array(buckets)
 
 # 直接运行本文件调用这个函数
 def SSXGBoost_test(dataset):
@@ -725,11 +694,11 @@ def SSXGBoost_test(dataset):
     FedQuantiles = load({company: Quantiles1, partner: Quantiles2}, partition_way=PartitionWay.HORIZONTAL)
 
     model = SSXGBoost(devices={'spu': spu, 'company': company, 'partner': partner}, 
-                      max_depth=2, n_estimators=10, div=False)
+                      max_depth=2, n_estimators=2, div=False)
 
     # 然后把训练集 secret‐share 到 SPU
     train_X = sf.to(company, np.array(train_X)).to(spu)
-    train_y = sf.to(company, np.array(train_y,dtype=np.float32))
+    train_y = sf.to(partner, np.array(train_y,dtype=np.float32))
 
     test_X1, test_X2 = test_X[:, :split_index], test_X[:, split_index:]
     test_X1 = sf.to(company, test_X1)
@@ -761,9 +730,11 @@ def SSXGBoost_test(dataset):
     sf.shutdown()
 
 from time import time
+import os
 if __name__ == "__main__":
     start_time = time()
-    SSXGBoost_test("risk")
+    SSXGBoost_test("breast")
     end_time = time()
     print(f"SSXGBoost test completed in {end_time - start_time:.2f} seconds.")
     # SSXGBoost_test("adult")
+    os._exit(0)

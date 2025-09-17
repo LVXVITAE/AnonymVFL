@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import argparse
 from secretflow.data.ndarray import load
+import os
 
 def main(args : argparse.Namespace):
     cluster_def = {
@@ -93,8 +94,6 @@ def main(args : argparse.Namespace):
         else:
             raise ValueError("Unsupported file format for partner share. Use .csv or .npy")
 
-
-
     def split_X_y(share, y_col):
         X = np.delete(share, y_col, axis=1)
         y = share[:, y_col].reshape(-1, 1)
@@ -109,9 +108,9 @@ def main(args : argparse.Namespace):
     X_train_partner, y_train_partner = partner(split_X_y,num_returns=2)(partner_share,y_col)
     X_train = share2spu(X_train_company, X_train_partner)
     if args.share_y:
-        y_train = train_label_keeper(lambda x, y : x + y)(y_train_company.to(train_label_keeper), y_train_partner.to(train_label_keeper))
-    else:
         y_train = share2spu(y_train_company, y_train_partner)
+    else:
+        y_train = train_label_keeper(lambda x, y : x + y)(y_train_company.to(train_label_keeper), y_train_partner.to(train_label_keeper))
 
     def read_val_dataset(path):
         data = pd.read_csv(path)
@@ -140,7 +139,7 @@ def main(args : argparse.Namespace):
 
     from LR import SSLR
 
-    model = SSLR(devices, approx=args.share_y)
+    model = SSLR(devices,args.reg_coef)
     accs = model.fit(X_train, y_train, X_test, y_test, n_epochs=args.n_epochs, batch_size=args.batch_size, val_steps=args.val_steps, lr=args.lr)
     if hasattr(args, 'path_to_company_model_save_dir') and hasattr(args, 'path_to_partner_model_save_dir'):
         model.save({
@@ -164,6 +163,7 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_company_val_dataset', type=str, default="", help='Company端验证集路径。数据集应为明文csv文件。')
     parser.add_argument('--path_to_partner_val_dataset', type=str, default="", help='Partner端验证集路径。数据集应为明文csv文件。')
     parser.add_argument('--model', type=str, default='SSLR', choices=['SSLR', 'SSXGBoost'], help='选择要运行的模型')
+    parser.add_argument('--reg_coef', type=float, default=0.0, help='正则化系数')
     parser.add_argument('--n_epochs', type=int, default=10, help='训练轮数')
     parser.add_argument('--batch_size', type=int, default=1024, help='批次大小')
     parser.add_argument('--val_steps', type=int, default=1, help='每隔多少步在验证集上评估一次')
@@ -172,3 +172,4 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_partner_model_save_dir', type=str, required=False, help='Partner端模型保存路径')
     args = parser.parse_args()
     main(args)
+    os._exit(0)

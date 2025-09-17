@@ -9,11 +9,11 @@ from secretflow.device import SPUObject, PYUObject
 from secretflow import SPU, PYU
 from secretflow.data import FedNdarray, PartitionWay
 from secretflow.data.ndarray import load
-from common import approx_sigmoid, sigmoid, softmax, load_dataset,to_int_labels
+from common import approx_sigmoid, sigmoid, softmax, load_dataset,to_int_labels,compute_accuracy
 import os, json
 
 class SSLR:
-    def __init__(self, devices: dict, lambda_ : float = 0, approx : bool = True):
+    def __init__(self, devices: dict, lambda_ : float = 0):
         """
         ## Args: 
          - devices : 应包含四个字段，每个字段的值应为SPU或PYU。例如：
@@ -25,12 +25,8 @@ class SSLR:
            }
 
          - lambda_: l2正则化参数，默认为0。
-         - approx: 是否使用近似sigmoid函数，默认为True。
-         这里提供了LR的两种实现。如果approx为True，则使用线性分段函数近似sigmoid函数。多分类场景下本模块会训练多个平行的2分类器（然而这样会导致每个分类器输出之和不为1，后续可考虑是否有更好的多分类算法）。
-         如果approx为False，则不近似sigmoid函数。双方先用安全多方乘法计算z = X @ w的结果，再将z发送到y的持有者（y不作秘密共享），由y的持有者计算sigmoid和梯度。多分类场景下用本模块softmax函数代替sigmoid函数。
         """
         self.lambda_ = lambda_
-        self.approx = approx
         assert 'spu' in devices and isinstance(devices['spu'], SPU), "devices must contain 'spu' of type SPU"
         self.spu = devices['spu']
         self.company = devices['company']
@@ -149,8 +145,12 @@ class SSLR:
         validate = X_test is not None and y_test is not None
         if validate:
             assert isinstance(X_test, FedNdarray), "X_test must be a FedNdarray"
-        if not self.approx:
-            assert y.device != self.spu, "When approx is False, y must not be on SPU"
+        
+        if self.out_features != 1:
+            assert isinstance(self.train_label_keeper, PYU), "For multi-class classification, secret sharing labels not supported"
+        
+        self.approx = y.device == self.spu
+        
         for j in trange(0,num_samples,batch_size):
             batch = min(batch_size,num_samples - j)
             keys = np.arange(j, j + batch)
@@ -170,10 +170,6 @@ class SSLR:
                 self._backward(X, y, y_pred, lr / t)
                 if validate and steps % val_steps == 0:
                     y_pred = self.predict(X_test, y_test.device)
-                    def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
-                        y_true = y_true.reshape(-1,1)
-                        y_pred = y_pred.reshape(-1,1)
-                        return np.mean(y_true == y_pred)
                     acc = y_test.device(compute_accuracy)(y_test, y_pred)
                     acc = sf.reveal(acc)
                     accs.append(acc)
@@ -260,7 +256,7 @@ def SSLR_test(dataset):
     train_X = sf.to(company, train_X).to(spu)
     train_y = sf.to(company, train_y).to(spu)
 
-    model = SSLR(devices, approx=True)
+    model = SSLR(devices)
     accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
     model.save({
         'company': './company_model',
@@ -455,4 +451,4 @@ if __name__ == "__main__":
     # LR_test("mnist")
     # for dataset in ["pima","pcs","uis","gisette","arcene"]:
     #     LR_test(dataset)
-    SSLR_test("breast")
+    SSLR_test("risk")
