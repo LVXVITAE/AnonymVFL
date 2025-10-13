@@ -219,16 +219,17 @@ def main(args : argparse.Namespace):
 
         model = SSLR(devices,args.reg_coef)
         accs = model.fit(X_train, y_train, X_test, y_test, n_epochs=args.n_epochs, batch_size=args.batch_size, val_steps=args.val_steps, lr=args.lr)
-        if hasattr(args, 'path_to_company_model_save_dir') and hasattr(args, 'path_to_partner_model_save_dir'):
-            model.save({
-                'company': args.path_to_company_model_save_dir,
-                'partner': args.path_to_partner_model_save_dir,
-            },ext='csv')
+
     elif args.model == "SSXGBoost":
         from XGBoost import SSXGBoost
         model = SSXGBoost(devices=devices, n_estimators=args.n_estimators, lambda_=args.reg_coef, max_depth=args.max_depth)
-
         train_accs, test_accs = model.fit(X_train, y_train, buckets, FedQuantiles,X_test, y_test)
+    
+    if hasattr(args, 'path_to_company_model_save_dir') and hasattr(args, 'path_to_partner_model_save_dir'):
+        model.save({
+            'company': args.path_to_company_model_save_dir,
+            'partner': args.path_to_partner_model_save_dir,
+        },ext='csv')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="AnonymVFL",description="运行匿踪对齐和匿踪学习")

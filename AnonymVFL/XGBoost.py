@@ -1,7 +1,7 @@
 import numpy as np
 import secretflow as sf
 import jax.numpy as jnp
-from common import sigmoid, approx_sigmoid, SigmoidCrossEntropy, ApproxSigmoidCrossEntropy, SoftmaxCrossEntropy, MeanSquare, softmax, to_int_labels, cross_entropy, mean_square_error, compute_accuracy
+from common import SS_share, sigmoid, approx_sigmoid, SigmoidCrossEntropy, ApproxSigmoidCrossEntropy, SoftmaxCrossEntropy, MeanSquare, softmax, to_int_labels, cross_entropy, mean_square_error, compute_accuracy
 from secretflow.device.device.spu import SPUCompilerNumReturnsPolicy
 from secretflow.device import SPUObject, PYUObject
 from secretflow import SPU, PYU
@@ -9,6 +9,8 @@ from secretflow.data import FedNdarray
 from secretflow.data.ndarray import load, PartitionWay
 from tqdm.contrib import tzip
 from tqdm import tqdm
+import dill 
+import json
 
 class TreeNode:
     """
@@ -24,6 +26,7 @@ class TreeNode:
         self.left = left
         self.right = right
         self.threshold = threshold
+        self.type = 'node'
 
 class Leaf:
     """叶子节点，包含叶子权重的索引，叶子权重以数组的形式保存在Tree类中"""
@@ -33,6 +36,7 @@ class Leaf:
         - num: 叶子权重的索引，类型为int
         """
         self.num = num
+        self.type = 'leaf'
 
 class Tree:
     def __init__(self, devices : dict, lambda_ : float = 1e-5, max_depth : int = 3, div : bool =False, mission = 'Classification'):
@@ -433,10 +437,10 @@ class Tree:
             num_samples = X.shape[0]
             if num_samples == 0:
                 return []
-            if isinstance(cur, Leaf):
+            if cur.type == 'leaf':
                 return [cur.num] * num_samples
-            elif isinstance(cur, TreeNode):
-                
+            elif cur.type == 'node':
+
                 j, k = cur.threshold
                 # 对于Company的特征，交由Company处理；对于Partner的特征，交由Partner处理
                 if j < self.split_index:
@@ -602,13 +606,108 @@ class SSXGBoost:
 
         return train_accs, test_accs
     
-    def save():
-        # TODO: 存储模型
-        return
+    def save(self, paths : dict[str, str], ext = 'npy'):
+        '''
+        ## Args
+        - paths: 保存模型的文件夹路径列表，包含company和partner的路径。例如：
+        paths = {
+            'company': 'path/to/company/model',
+            'partner': 'path/to/partner/model'
+        }
+        '''
+        trees = []
+        weights1, weights2 = [], []
+        for tree in self.trees:
+            trees.append(tree.root)
+            w1, w2 = self.spu(SS_share, num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER, user_specified_num_returns=2)(tree.leaf_weights)
+            w1 = w1.to(self.company)
+            w2 = w2.to(self.partner)
+            weights1.append(w1)
+            weights2.append(w2)
+        weights1 = self.company(lambda x : jnp.array(x))(weights1)
+        weights2 = self.partner(lambda x : jnp.array(x))(weights2)
+        info = {
+            'in_features': self.in_features,
+            'out_features': self.out_features,
+            'n_estimators': self.n_estimators,
+            'mission': self.mission,
+            'max_depth': self.max_depth,
+            'div': self.div,
+            'lambda_': self.lambda_,
+            'save_as': ext
+        }
+        def save_model(w : np.ndarray, quantiles : np.ndarray, path : str):
+            try:
+                os.makedirs(path, exist_ok=True)
+                print(f"Directory '{path}' created or already exists.")
+            except OSError as e:
+                print(f"Error creating directory '{path}': {e}")
+            
+            if ext == 'npy':
+                np.save(os.path.join(path, 'weight.npy'), w)
+                np.save(os.path.join(path, 'quantiles.npy'), quantiles)
+            elif ext == 'csv':
+                np.savetxt(os.path.join(path, 'weight.csv'), w, delimiter=',')
+                np.savetxt(os.path.join(path, 'quantiles.csv'), quantiles, delimiter=',')
+            json.dump(info, open(os.path.join(path, 'info.json'), 'w'))
+            with open(os.path.join(path, 'tree.pkl'), 'wb') as f:
+                dill.dump(trees, f)
+            
 
-    def load():
-        # TODO: 加载模型
-        return
+        self.company(save_model)(weights1, self.FedQuantiles.partitions[self.company], paths['company'])
+        self.partner(save_model)(weights2, self.FedQuantiles.partitions[self.partner], paths['partner'])
+
+    def load(self, paths : dict[str, str]):
+        def load_model(path : str):
+            info = json.load(open(os.path.join(path, 'info.json'), 'r'))
+            ext = info['save_as']
+            if ext == 'csv':
+                w = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',')
+                quantiles = np.loadtxt(os.path.join(path, 'quantiles.csv'), delimiter=',')
+            else:
+                w = np.load(os.path.join(path, 'weight.npy'))
+                quantiles = np.load(os.path.join(path, 'quantiles.npy'))
+            with open(os.path.join(path, 'tree.pkl'), 'rb') as f:
+                trees = dill.load(f)
+            return w, trees, quantiles, info
+
+        w1, trees1, quantiles1, info1 = self.company(load_model, num_returns=4)(paths['company'])
+        w2, trees2, quantiles2, info2 = self.partner(load_model, num_returns=4)(paths['partner'])
+        info1 = sf.reveal(info1)
+        info2 = sf.reveal(info2)
+        trees1 = sf.reveal(trees1)
+        assert info1 == info2, "Model info mismatch"
+
+        self.in_features = info1['in_features']
+        self.out_features = info1['out_features']
+        self.n_estimators = info1['n_estimators']
+        self.mission = info1['mission']
+        self.max_depth = info1['max_depth']
+        self.div = info1['div']
+        self.lambda_ = info1['lambda_']
+
+        self.FedQuantiles = load({self.company: quantiles1, self.partner: quantiles2}, partition_way=PartitionWay.HORIZONTAL)
+        self.trees = []
+        split_index = sf.reveal(self.FedQuantiles.partition_shape()[self.company])[0]
+
+        if self.mission == 'Regression':
+            self.activate_fn = lambda x: x
+        elif self.mission == 'Classification':
+            if self.out_features == 1:
+                    self.activate_fn = sigmoid
+            else:
+                assert isinstance(self.train_label_keeper,PYU), "For muiti-class classification, secret-sharing labels not supported"
+                self.activate_fn = softmax
+
+        for i in range(self.n_estimators):
+            t = Tree(self.devices, self.lambda_, self.max_depth, self.div, self.mission)
+            t.root = trees1[i]
+            weight1 = self.company(lambda x, idx : x[idx])(w1, i).to(self.spu)
+            weight2 = self.partner(lambda x, idx : x[idx])(w2, i).to(self.spu)
+            t.FedQuantiles = self.FedQuantiles
+            t.split_index = split_index
+            t.leaf_weights = self.spu(lambda x, y : x+y)(weight1, weight2)
+            self.trees.append(t)
 
 import numpy as np
 from common import load_dataset
@@ -694,7 +793,7 @@ def SSXGBoost_test(dataset):
     FedQuantiles = load({company: Quantiles1, partner: Quantiles2}, partition_way=PartitionWay.HORIZONTAL)
 
     model = SSXGBoost(devices={'spu': spu, 'company': company, 'partner': partner}, 
-                      max_depth=2, n_estimators=2, div=False)
+                      max_depth=1, n_estimators=2, div=False)
 
     # 然后把训练集 secret‐share 到 SPU
     train_X = sf.to(company, np.array(train_X)).to(spu)
@@ -715,7 +814,16 @@ def SSXGBoost_test(dataset):
     plt.legend()
     plt.title(f"SSXGBoost_{dataset}")
     plt.savefig(f"SSXGBoost_{dataset}.png")
-    # test_X = sf.reveal(test_X)
+
+    model.save({'company':f'SSXGBoost_{dataset}_company','partner':f'SSXGBoost_{dataset}_partner'}, ext='csv')
+    model = SSXGBoost(devices={'spu': spu, 'company': company, 'partner': partner})
+    model.load({'company':f'SSXGBoost_{dataset}_company','partner':f'SSXGBoost_{dataset}_partner'})
+    y_pred = model.predict(test_X, device=company)
+    y_pred = sf.reveal(y_pred)
+    test_y = sf.reveal(test_y)
+    from sklearn.metrics import accuracy_score
+    Accuracy = accuracy_score(test_y, y_pred)
+    print(f"Accuracy of SSXGBoost on {dataset} dataset after loading: {Accuracy:.4f}")
 
     # import xgboost as xgb
     # model = xgb.XGBClassifier()

@@ -197,7 +197,7 @@ class SSLR:
             'approx': bool(self.approx),
             'save_as' : ext
         }
-        def save_model(w : np.ndarray, path : str):
+        def save_model(w : np.ndarray, info : dict, path : str):
             try:
                 os.makedirs(path, exist_ok=True)
                 print(f"Directory '{path}' created or already exists.")
@@ -209,10 +209,10 @@ class SSLR:
             elif ext == 'csv':
                 np.savetxt(os.path.join(path, 'weight.csv'), w, delimiter=',')
             json.dump(info, open(os.path.join(path, 'info.json'), 'w'))
-        self.company(save_model)(w1, paths['company'])
-        self.partner(save_model)(w2, paths['partner'])
+        self.company(save_model)(w1, info, paths['company'])
+        self.partner(save_model)(w2, info, paths['partner'])
 
-    def load(self, paths):
+    def load(self, paths : dict[str, str]):
         def load_model(path : str):
             info = json.load(open(os.path.join(path, 'info.json'), 'r'))
             ext = info['save_as']
@@ -220,9 +220,13 @@ class SSLR:
                 w = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',')
             else:
                 w = np.load(os.path.join(path, 'weight.npy'))
+            if w.ndim == 1:
+                w = w.reshape(-1, 1)
             return w, info
-        w1, info1 = self.company(load_model)(paths['company'])
-        w2, info2 = self.partner(load_model)(paths['partner'])
+        w1, info1 = self.company(load_model, num_returns=2)(paths['company'])
+        w2, info2 = self.partner(load_model, num_returns=2)(paths['partner'])
+        info1 = sf.reveal(info1)
+        info2 = sf.reveal(info2)
         assert info1 == info2, "Model info mismatch between company and partner"
         self.w = load({self.company: w1, self.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
         self.in_features, self.out_features = info1['shape']
@@ -259,10 +263,20 @@ def SSLR_test(dataset):
     model = SSLR(devices)
     accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
     model.save({
-        'company': './company_model',
-        'partner': './partner_model'
+        'company': 'SSLR_breast_company',
+        'partner': 'SSLR_breast_partner'
     },ext='csv')
     plt.plot(accs,label = "SSLR",color = "blue")
+
+    model = SSLR(devices)
+    model.load({
+        'company': 'SSLR_breast_company',
+        'partner': 'SSLR_breast_partner'
+    })
+    y_pred = model.predict(test_X, test_y.device)
+    Accracy = test_y.device(compute_accuracy)(test_y, y_pred)
+    Accracy = sf.reveal(Accracy)
+    print(f"Loaded model accuracy: {Accracy:.4f}")
 
     test_X = np.hstack([sf.reveal(test_X.partitions[company]), sf.reveal(test_X.partitions[partner])])
     test_y = sf.reveal(test_y)
@@ -451,4 +465,4 @@ if __name__ == "__main__":
     # LR_test("mnist")
     # for dataset in ["pima","pcs","uis","gisette","arcene"]:
     #     LR_test(dataset)
-    SSLR_test("risk")
+    SSLR_test("breast")
