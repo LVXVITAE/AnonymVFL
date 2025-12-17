@@ -132,17 +132,19 @@ class Tree:
             return -g_sum / (h_sum + lambda_)
         weight=self.spu(leaf_weight_div)(g_sum, h_sum, self.lambda_)
         # else:
-        #     from jax import random
-        #     noise = random.laplace(random.PRNGKey(0)).item()
-        #     noisy_hsum = spu(jnp.add)(h_sum, noise)           
-        #     lr = 1 / sf.reveal(noisy_hsum)
-        #     def leaf_weight_opt(g_sum : jnp.ndarray, h_sum : jnp.ndarray):
-        #         n_iter = 10
-        #         w = 0
-        #         for _ in range(n_iter):
-        #             w -= lr * (h_sum * w + g_sum)
-        #         return w
-        #     weight=spu(leaf_weight_opt)(g_sum, h_sum)
+            # sigma = np.random.laplace()
+
+            # lr = self.spu(lambda h_sum, lambda_, sigma : h_sum + lambda_ + sigma)(h_sum, self.lambda_, sigma)
+            # lr = sf.reveal(lr)
+            # lr = 1 / lr
+            # def leaf_weight_opt(g_sum : jnp.ndarray, h_sum : jnp.ndarray, lambda_ : float, lr : float):
+            #     n_iter = 10
+            #     w = 0
+            #     a = h_sum + lambda_
+            #     for _ in range(n_iter):
+            #         w -= lr * (a * w + g_sum)
+            #     return w
+        #     weight=self.spu(leaf_weight_opt)(g_sum, h_sum, self.lambda_, lr)
 
         self.leaf_weights.append(weight)    # 在叶子权重列表中添加新叶子权重
         def update_pred(pred : jnp.ndarray, weight : jnp.ndarray, s : jnp.ndarray):
