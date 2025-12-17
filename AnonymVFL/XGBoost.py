@@ -39,7 +39,7 @@ class Leaf:
         self.type = 'leaf'
 
 class Tree:
-    def __init__(self, devices : dict, lambda_ : float = 1e-5, max_depth : int = 3, div : bool =False, mission = 'Classification'):
+    def __init__(self, devices : dict, lambda_ : float = 1, gamma : float = 0.5, max_depth : int = 3, div : bool =False, mission = 'Classification'):
         """
         初始化树
         ## Args:
@@ -50,12 +50,14 @@ class Tree:
             'company': company,
             'partner': partner,
            }
-        - lambda_: l2正则化参数，默认为1e-5
+        - lambda_: l2正则化参数，默认为1
+        - gamma：叶节点数量惩罚系数，默认0.5
         - max_depth: 树的最大深度，默认为3
         - div: 是否使用除法。如果为True，则使用除法计算叶子权重和信息增益；如果为False，则使用优化算法计算叶子权重和增益最大分裂点。
         """
         self.max_depth : int = max_depth
         self.lambda_ : float = lambda_
+        self.gamma : float = gamma
         self.div : bool = div
         # 叶子权重列表，存储每个叶子节点的权重
         self.leaf_weights = []
@@ -262,7 +264,7 @@ class Tree:
         """
         indices = [(j, k) for j in range(len(G_L)) for k in range(len(G_L[j]))]
         print("Selecting best split ...")
-        def gain(g_L : jnp.ndarray, g_R : jnp.ndarray, h_L : jnp.ndarray, h_R : jnp.ndarray, loss_n : jnp.ndarray, loss_d : jnp.ndarray, lambda_ : float) -> jnp.ndarray:
+        def gain(g_L : jnp.ndarray, g_R : jnp.ndarray, h_L : jnp.ndarray, h_R : jnp.ndarray, loss_n : jnp.ndarray, loss_d : jnp.ndarray, gamma : float) -> jnp.ndarray:
             """
             计算增益
             ## Args:
@@ -273,9 +275,9 @@ class Tree:
             - loss_n: 当前节点的目标损失的分子
             - loss_d: 当前节点的目标损失的分母
             """
-            return (1/2) * ((g_L / h_L) + (g_R / h_R) - (loss_n / loss_d)) - lambda_
+            return (1/2) * ((g_L / h_L) + (g_R / h_R) - (loss_n / loss_d)) - gamma
         if self.div: # 使用除法直接计算所有节点的增益（尚未测试）
-            def argmax_gain(G_L : jnp.ndarray, G_R : jnp.ndarray, H_L : jnp.ndarray, H_R : jnp.ndarray, loss_n : jnp.ndarray, loss_d : jnp.ndarray, lambda_ : float) -> tuple[int, bool]:
+            def argmax_gain(G_L : jnp.ndarray, G_R : jnp.ndarray, H_L : jnp.ndarray, H_R : jnp.ndarray, loss_n : jnp.ndarray, loss_d : jnp.ndarray, gamma : float) -> tuple[int, bool]:
                 """
                 计算增益最大值
                 """
@@ -283,10 +285,10 @@ class Tree:
                 G_R = jnp.array(G_R)
                 H_L = jnp.array(H_L)
                 H_R = jnp.array(H_R)
-                gain_ =  gain(G_L, G_R, H_L, H_R, loss_n, loss_d, lambda_)
+                gain_ =  gain(G_L, G_R, H_L, H_R, loss_n, loss_d, gamma)
                 i = jnp.argmax(gain_)
                 return i, gain_.flatten()[i] > 0
-            i, sign = self.spu(argmax_gain,num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER, user_specified_num_returns=2)(G_L, G_R, H_L, H_R, loss_n, loss_d, self.lambda_)
+            i, sign = self.spu(argmax_gain,num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER, user_specified_num_returns=2)(G_L, G_R, H_L, H_R, loss_n, loss_d, self.gamma)
             i = sf.reveal(i)
             sign = sf.reveal(sign).item()
             j_opt, k_opt = indices[i]
@@ -373,15 +375,15 @@ class Tree:
             h_L_opt = H_L[j_opt][k_opt]
             h_R_opt = H_R[j_opt][k_opt]
 
-            def max_gain_sign(g_L : jnp.ndarray, g_R : jnp.ndarray, h_L : jnp.ndarray, h_R : jnp.ndarray, loss_n : jnp.ndarray, loss_d : jnp.ndarray, lambda_ : float) -> jnp.ndarray:
+            def max_gain_sign(g_L : jnp.ndarray, g_R : jnp.ndarray, h_L : jnp.ndarray, h_R : jnp.ndarray, loss_n : jnp.ndarray, loss_d : jnp.ndarray, gamma : float) -> jnp.ndarray:
                 """ 计算增益最大分裂点的正负"""
                 h_LR = h_L * h_R
                 denom = 2 * h_LR * loss_d
-                nom = (g_L * h_R + h_L * g_R - 2 * lambda_ * h_LR) * loss_d - h_LR * loss_n
+                nom = (g_L * h_R + h_L * g_R - 2 * gamma * h_LR) * loss_d - h_LR * loss_n
                 return ~ (nom > 0) ^ (denom > 0)
-            # max_gain = self.spu(gain)(g_L_opt, g_R_opt, h_L_opt, h_R_opt, loss_n, loss_d, self.lambda_)
+            # max_gain = self.spu(gain)(g_L_opt, g_R_opt, h_L_opt, h_R_opt, loss_n, loss_d, self.gamma)
             # max_gain = sf.reveal(max_gain)
-            sign = self.spu(max_gain_sign)(g_L_opt, g_R_opt, h_L_opt, h_R_opt, loss_n, loss_d, self.lambda_)
+            sign = self.spu(max_gain_sign)(g_L_opt, g_R_opt, h_L_opt, h_R_opt, loss_n, loss_d, self.gamma)
             sign = sf.reveal(sign).item()
             return j_opt, k_opt, sign
 
@@ -476,7 +478,7 @@ class Tree:
         return w
 
 class SSXGBoost:
-    def __init__(self, devices : dict, n_estimators = 3, lambda_ = 1e-5, max_depth = 3, div = False, mission = 'Classification'):
+    def __init__(self, devices : dict, n_estimators = 3, lambda_ = 1, gamma = 0.5, max_depth = 3, div = False, mission = 'Classification'):
         """
         初始化SSXGBoost模型
         ## Args:
@@ -488,13 +490,15 @@ class SSXGBoost:
             'partner': partner,
            }
         - n_estimators: 树的数量，默认为5
-        - lambda_: l2正则化参数，默认为1e-5
+        - lambda_: l2正则化参数，默认为1
+        - gamma：叶节点数量惩罚系数，默认0.5
         - max_depth: 树的最大深度，默认为3
         - div: 是否使用除法。如果为True，则使用除法计算叶子权重和信息增益；如果为False，则使用优化算法计算叶子权重和增益最大分裂点。
         """
         self.trees : list[Tree] = []
         self.n_estimators = n_estimators
         self.lambda_ = lambda_
+        self.gamma = gamma
         self.max_depth = max_depth
         self.div = div
         self.devices = devices
@@ -571,7 +575,7 @@ class SSXGBoost:
         train_accs = []
         test_accs = []            
         for i in range(self.n_estimators):
-            tree = Tree(self.devices, self.lambda_, self.max_depth, self.div, self.mission)
+            tree = Tree(self.devices, self.lambda_, self.gamma, self.max_depth, self.div, self.mission)
             tree.fit(X, y, y_pred, buckets, self.FedQuantiles)
 
             y_t = tree.train_pred.to(self.train_label_keeper)
@@ -634,6 +638,7 @@ class SSXGBoost:
             'max_depth': self.max_depth,
             'div': self.div,
             'lambda_': self.lambda_,
+            'gamma': self.gamma,
             'save_as': ext
         }
         def save_model(w : np.ndarray, quantiles : np.ndarray, path : str):
@@ -685,6 +690,7 @@ class SSXGBoost:
         self.max_depth = info1['max_depth']
         self.div = info1['div']
         self.lambda_ = info1['lambda_']
+        self.gamma = info1['gamma']
 
         self.FedQuantiles = load({self.company: quantiles1, self.partner: quantiles2}, partition_way=PartitionWay.HORIZONTAL)
         self.trees = []
@@ -700,7 +706,7 @@ class SSXGBoost:
                 self.activate_fn = softmax
 
         for i in range(self.n_estimators):
-            t = Tree(self.devices, self.lambda_, self.max_depth, self.div, self.mission)
+            t = Tree(self.devices, self.lambda_, self.gamma, self.max_depth, self.div, self.mission)
             t.root = trees1[i]
             weight1 = self.company(lambda x, idx : x[idx])(w1, i).to(self.spu)
             weight2 = self.partner(lambda x, idx : x[idx])(w2, i).to(self.spu)
@@ -793,7 +799,7 @@ def SSXGBoost_test(dataset):
     FedQuantiles = load({company: Quantiles1, partner: Quantiles2}, partition_way=PartitionWay.HORIZONTAL)
 
     model = SSXGBoost(devices={'spu': spu, 'company': company, 'partner': partner}, 
-                      max_depth=1, n_estimators=2, div=False)
+                      max_depth=2, n_estimators=2, div=False)
 
     # 然后把训练集 secret‐share 到 SPU
     train_X = sf.to(company, np.array(train_X)).to(spu)

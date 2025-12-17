@@ -222,7 +222,7 @@ def main(args : argparse.Namespace):
 
     elif args.model == "SSXGBoost":
         from XGBoost import SSXGBoost
-        model = SSXGBoost(devices=devices, n_estimators=args.n_estimators, lambda_=args.reg_coef, max_depth=args.max_depth)
+        model = SSXGBoost(devices=devices, n_estimators=args.n_estimators, lambda_=args.reg_coef, gamma=args.leaf_coef, max_depth=args.max_depth)
         train_accs, test_accs = model.fit(X_train, y_train, buckets, FedQuantiles,X_test, y_test)
     
     if hasattr(args, 'path_to_company_model_save_dir') and hasattr(args, 'path_to_partner_model_save_dir'):
@@ -248,7 +248,7 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_company_val_dataset', type=str, default="", help='Company端验证集路径。数据集应为明文csv文件。')
     parser.add_argument('--path_to_partner_val_dataset', type=str, default="", help='Partner端验证集路径。数据集应为明文csv文件。')
     parser.add_argument('--model', type=str, default='SSLR', choices=['SSLR', 'SSXGBoost'], help='选择要运行的模型')
-    parser.add_argument('--reg_coef', type=float, default=0.0, help='正则化系数')
+    parser.add_argument('--reg_coef', type=float, default=1, help='l2正则化系数')
     parser.add_argument('--n_epochs', type=int, default=10, help='训练轮数')
     parser.add_argument('--batch_size', type=int, default=1024, help='批次大小')
     parser.add_argument('--val_steps', type=int, default=1, help='每隔多少步在验证集上评估一次')
@@ -256,6 +256,7 @@ if __name__ == "__main__":
     parser.add_argument('--K_quantiles', type=int, default=20, help='分桶的分位数个数')
     parser.add_argument('--n_estimators', type=int, default=2, help='XGBoost的决策树数量')
     parser.add_argument('--max_depth', type=int, default=2, help='XGBoost的树最大深度')
+    parser.add_argument('--leaf_coef', type=float, default=0.5, help='叶节点数量惩罚系数')
     parser.add_argument('--path_to_company_model_save_dir', type=str, required=False, help='Company端模型保存路径')
     parser.add_argument('--path_to_partner_model_save_dir', type=str, required=False, help='Partner端模型保存路径')
     args = parser.parse_args()
