@@ -1,0 +1,65 @@
+{{- if .Values.company.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-company-pvc
+  labels:
+    {{- include "mobile-mpc.company.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.company.persistence.accessMode }}
+  {{- if .Values.company.persistence.storageClass }}
+  storageClassName: {{ .Values.company.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.company.persistence.size }}
+{{- end }}
+
+{{- if .Values.partner.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-partner-pvc
+  labels:
+    {{- include "mobile-mpc.partner.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.partner.persistence.accessMode }}
+  {{- if .Values.partner.persistence.storageClass }}
+  storageClassName: {{ .Values.partner.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.partner.persistence.size }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-pv
+  labels:
+    {{- include "mobile-mpc.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ .Values.persistence.pvSize }}
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  {{- end }}
+  {{- if .Values.persistence.nfsServer }}
+  nfs:
+    server: {{ .Values.persistence.nfsServer }}
+    path: {{ .Values.persistence.path }}
+  {{- else }}
+  hostPath:
+    path: {{ .Values.persistence.path }}
+    type: DirectoryOrCreate
+  {{- end }}
+{{- end }}
+

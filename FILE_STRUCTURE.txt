@@ -1,0 +1,81 @@
+移动多方安全计算项目 - Helm Chart 文件结构
+═══════════════════════════════════════════════════
+
+mobile_project3_new/
+│
+├── 📋 核心配置文件
+│   ├── Dockerfile                    ✅ Docker 镜像构建文件
+│   ├── requirements.txt              ✅ Python 依赖清单
+│   └── .dockerignore                ✅ Docker 构建忽略文件
+│
+├── 📚 文档文件
+│   ├── DEPLOYMENT.md                 ✅ 详细部署指南（11KB）
+│   ├── QUICKSTART.md                 ✅ 快速入门指南（4.3KB）
+│   ├── SUMMARY.md                    ✅ 完成总结
+│   ├── FILE_STRUCTURE.txt            ✅ 本文件
+│   ├── 操作手册.md                   📖 原始操作手册
+│   └── 操作手册.pdf                  📖 原始操作手册（PDF）
+│
+├── 🔧 工具脚本
+│   └── validate-chart.sh             ✅ Chart 验证脚本（5.0KB）
+│
+├── 📦 Helm Chart 包
+│   └── helm-chart/
+│       └── mobile-mpc-project/
+│           │
+│           ├── Chart.yaml            ✅ Chart 元数据
+│           ├── values.yaml           ✅ 默认配置（207行）
+│           ├── README.md             ✅ Chart 使用文档
+│           ├── .helmignore          ✅ Helm 打包忽略
+│           │
+│           └── templates/            📂 Kubernetes 资源模板
+│               ├── _helpers.tpl              ✅ 辅助函数（145行）
+│               ├── company-deployment.yaml   ✅ Company部署（116行）
+│               ├── partner-deployment.yaml   ✅ Partner部署（111行）
+│               ├── service.yaml              ✅ 服务配置（72行）
+│               ├── serviceaccount.yaml       ✅ 服务账户（10行）
+│               ├── ingress.yaml              ✅ 入口路由（36行）
+│               ├── pvc.yaml                  ✅ 持久化存储（53行）
+│               └── NOTES.txt                 ✅ 部署提示（74行）
+│
+└── 💻 应用代码（原有文件）
+    ├── company/                      🏢 甲方节点代码
+    ├── partner/                      🤝 乙方节点代码
+    ├── web_ui/                       🌐 Web UI界面
+    ├── trans/                        📡 传输模块
+    ├── test/                         🧪 测试文件
+    └── data_full.csv                 📊 数据文件
+
+═══════════════════════════════════════════════════
+统计信息
+═══════════════════════════════════════════════════
+
+✅ 新创建文件：       17 个
+📝 Kubernetes 配置：  711 行
+📖 文档：            3 个（~15KB）
+🔧 脚本工具：        1 个
+
+═══════════════════════════════════════════════════
+支持的 Kubernetes 资源
+═══════════════════════════════════════════════════
+
+✓ Deployment          (Company + Partner 节点)
+✓ Service             (网络服务)
+✓ ServiceAccount      (服务账户)
+✓ PersistentVolumeClaim (持久化卷，可选)
+✓ Ingress             (入口路由，可选)
+
+═══════════════════════════════════════════════════
+Chart 功能特性
+═══════════════════════════════════════════════════
+
+✓ 多节点部署（Company、Partner、Coordinator）
+✓ 灵活的资源配置
+✓ 镜像仓库支持
+✓ 持久化存储支持
+✓ Ingress 路由支持
+✓ 多种服务类型
+✓ 亲和性和容忍度配置
+✓ 自定义标签和注解
+
+═══════════════════════════════════════════════════

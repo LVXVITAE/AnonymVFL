@@ -1,0 +1,21 @@
+apiVersion: v2
+name: mobile-mpc-project
+description: A Helm chart for Mobile Multi-Party Computation Project based on SecretFlow
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - secretflow
+  - mpc
+  - federated-learning
+  - privacy-computing
+
+maintainers:
+  - name: MPC Team
+    email: team@example.com
+
+home: https://github.com/your-org/mobile-mpc-project
+sources:
+  - https://github.com/your-org/mobile-mpc-project
+

@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+.eggs/
+venv/
+.venv/
+.env
+.env.*
+
+# Logs
+*.log
+company/company_run.log
+company/spu.log
+partner/partner_run.log
+partner/spu.log
+
+# Trained models (generated at runtime)
+company/models/
+partner/models/
+
+# Runtime / generated data
+company/buckets.npy
+company/company_share.csv
+partner/partner_share.csv
+
+# Archives and package output
+*.rar
+*.tar
+*.tgz
+*.zip
+code.rar
+code.tar.gz
+web_ui.rar
+dist/
+
+# Backup files
+*.backup
+*.bak
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Optional: uncomment if you don't want to track sample datasets
+# company/Datasets/

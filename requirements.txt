@@ -1,0 +1,45 @@
+# 移动联邦学习项目依赖包
+# SecretFlow 多方安全计算框架
+
+# SecretFlow 核心依赖（会自动安装 pandas, numpy, jax, requests 等依赖）
+secretflow==1.12.0b0
+
+click==8.2.1
+# 密码学库
+rbcl==1.0.1
+
+# Web框架和UI
+Flask==2.3.3
+Flask-SocketIO==5.3.6
+Flask-Cors==4.0.0
+
+# 系统监控和管理
+psutil==5.9.6
+supervisor==4.2.5
+
+# 网络通信
+eventlet==0.33.3
+
+# 配置和日志
+PyYAML==6.0.1
+colorlog==6.7.0
+
+# 进度条
+tqdm
+
+# 数据可视化
+matplotlib
+
+# 机器学习工具
+scikit-learn
+
+# 序列化工具（XGBoost save() 方法需要）
+dill
+
+# Kubernetes API 客户端（Web UI 读取 Pod 日志和控制 Deployment 需要）
+kubernetes>=28.0.0
+
+# 可选依赖
+# redis==4.6.0
+# celery==5.3.1
+

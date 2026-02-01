@@ -8,10 +8,10 @@ PORT_RAY="20001"
 PORT_COMPANY_SPU="11001"
 PORT_PARTNER_SPU="11002"
 PORT_COORD_SPU="11003"
-COM_PATH="/home/dxn/mobile_project3/company"
-PAR_PATH="/home/dxn/mobile_project3/partner"
 
 cd "$(dirname "$0")"
+COM_PATH="."
+PAR_PATH="../partner"
 
 # 1) 启动 Ray head（只打 company/coordinator 资源）
 # ray stop || true

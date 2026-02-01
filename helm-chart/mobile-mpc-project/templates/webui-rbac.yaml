@@ -1,0 +1,42 @@
+{{- if .Values.webui.enabled }}
+---
+# Web UI Role - 允许读取 Pod 日志和修改 Deployment
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-webui-role
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mobile-mpc.labels" . | nindent 4 }}
+rules:
+# 允许读取 Pod 信息
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+# 允许读取 Pod 日志
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+# 允许读取和修改 Deployment（用于控制训练参数）
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "patch", "update"]
+---
+# Web UI RoleBinding - 将 Role 绑定到 ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-webui-rolebinding
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mobile-mpc.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mobile-mpc.fullname" . }}-webui-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "mobile-mpc.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+

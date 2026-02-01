@@ -1,0 +1,180 @@
+{{- if .Values.company.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-company
+  labels:
+    {{- include "mobile-mpc.company.labels" . | nindent 4 }}
+    {{- with .Values.company.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.company.extraAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.company.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mobile-mpc.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: company
+  template:
+    metadata:
+      labels:
+        {{- include "mobile-mpc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: company
+        {{- with .Values.company.extraLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.company.extraAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # 🌐 启用 hostNetwork 以支持跨集群直接通信
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet  # 保留 Kubernetes DNS 解析
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "mobile-mpc.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: company
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: {{ include "mobile-mpc.image" (dict "image" .Values.company.image "Chart" .Chart "Values" .Values) }}
+        imagePullPolicy: {{ .Values.company.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            echo "🚀 启动 Company 节点..."
+            
+            # 清理旧的 Ray 资源（如果存在）
+            echo "🧹 清理旧的 Ray 资源..."
+            ray stop --force || true
+            sleep 2
+            
+            # 获取 Host IP (使用 hostNetwork 后，Pod IP 就是 Host IP)
+            export HOST_IP=$(hostname -i | awk '{print $1}')
+            echo "📍 Host IP: $HOST_IP"
+            echo "🌐 使用 hostNetwork 模式，直接监听节点 IP"
+            
+            # 使用 Ray CLI 启动 Ray Head（指定端口 6379）
+            # hostNetwork 模式下直接使用节点 IP，无需 NAT
+            echo "📍 启动 Ray Head (端口: {{ .Values.company.service.ports.ray }})..."
+            ray start --head \
+              --port={{ .Values.company.service.ports.ray }} \
+              --num-cpus={{ .Values.company.resources.requests.cpu | default 8 }} \
+              --resources='{"company": 10, "coordinator": 10}' \
+              --object-store-memory=2000000000 \
+              --include-dashboard=false \
+              --node-ip-address=$HOST_IP &
+            
+            RAY_PID=$!
+            echo "Ray Head 后台进程 PID: $RAY_PID"
+            
+            # 等待 Ray Head 启动
+            echo "⏳ 等待 Ray Head 准备就绪..."
+            sleep 5
+            
+            # 验证 Ray Head 是否启动成功
+            if ! ray status &>/dev/null; then
+              echo "⚠️  Ray Head 启动检查失败，继续执行..."
+            else
+              echo "✅ Ray Head 已启动"
+            fi
+            
+            # 优先使用环境变量（跨集群场景），否则解析 Partner Service（单集群场景）
+            if [ -n "$PARTNER_SPU_ADDR" ]; then
+              echo "📍 使用跨集群 Partner SPU 地址: $PARTNER_SPU_ADDR"
+            else
+              echo "🔍 解析 Partner Service 地址..."
+              PARTNER_SERVICE_NAME="{{ include "mobile-mpc.fullname" . }}-partner-svc"
+              PARTNER_IP=$(getent hosts $PARTNER_SERVICE_NAME | awk '{ print $1 }' | head -1)
+              if [ -z "$PARTNER_IP" ]; then
+                echo "⚠️  无法解析 Partner Service，使用配置的地址"
+                PARTNER_SPU_ADDR="{{ .Values.company.partnerSpuAddr }}"
+              else
+                echo "✅ Partner IP: $PARTNER_IP"
+                PARTNER_SPU_ADDR="$PARTNER_IP:{{ .Values.partner.service.ports.spu }}"
+              fi
+              echo "📍 使用单集群 Partner SPU 地址: $PARTNER_SPU_ADDR"
+            fi
+            
+            # 🔥 修改：不自动执行训练，等待 Web UI 通过修改 Deployment args 来启动训练
+            echo "✅ Company 节点已就绪，等待 Web UI 启动训练任务..."
+            echo "📍 Ray Head 地址: $HOST_IP:{{ .Values.company.service.ports.ray }}"
+            echo "📍 Partner SPU 地址: $PARTNER_SPU_ADDR"
+            echo ""
+            echo "💡 提示：训练任务将由 Web UI 通过 Kubernetes API 动态注入"
+            echo "💡 提示：Web UI 会修改此 Deployment 的 args，添加训练命令并重启 Pod"
+            
+            # 保持 Pod 运行（等待训练命令）
+            # Web UI 会通过修改 Deployment args 来添加训练命令
+            tail -f /dev/null
+        ports:
+        - name: spu
+          containerPort: {{ .Values.company.service.ports.spu }}
+          protocol: TCP
+        - name: coordinator
+          containerPort: 9396
+          protocol: TCP
+        - name: ray
+          containerPort: {{ .Values.company.service.ports.ray }}
+          protocol: TCP
+        - name: webui
+          containerPort: {{ .Values.company.service.ports.webui }}
+          protocol: TCP
+        env:
+        {{- include "mobile-mpc.commonEnv" . | nindent 8 }}
+        {{- with .Values.company.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        - name: models
+          mountPath: /app/company/models
+        - name: logs
+          mountPath: /app/logs
+        - name: dshm
+          mountPath: /dev/shm
+        {{- if .Values.global.resourcesEnabled }}
+        resources:
+          {{- toYaml .Values.company.resources | nindent 10 }}
+        {{- end }}
+      volumes:
+      {{- include "mobile-mpc.volumes" .Values.company | nindent 6 }}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Gi
+      {{- with .Values.company.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.global.affinityEnabled }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: {{ .Values.global.affinity.key }}
+                operator: In
+                values:
+                {{- toYaml .Values.global.affinity.values | nindent 16 }}
+      {{- else }}
+        {{- with .Values.company.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.company.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+

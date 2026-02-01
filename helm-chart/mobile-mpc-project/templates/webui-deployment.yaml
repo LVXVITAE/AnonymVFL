@@ -1,0 +1,163 @@
+{{- if .Values.webui.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-webui
+  labels:
+    {{- include "mobile-mpc.webui.labels" . | nindent 4 }}
+    {{- with .Values.webui.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.webui.extraAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.webui.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mobile-mpc.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: webui
+  template:
+    metadata:
+      labels:
+        {{- include "mobile-mpc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: webui
+        {{- with .Values.webui.extraLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.webui.extraAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "mobile-mpc.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: webui
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: {{ include "mobile-mpc.image" (dict "image" .Values.webui.image "Chart" .Chart "Values" .Values) }}
+        imagePullPolicy: {{ .Values.webui.image.pullPolicy | default .Values.global.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            echo "🚀 启动 Web UI..."
+            
+            # 清理旧的日志文件
+            echo "🧹 清理旧的日志文件..."
+            rm -f /app/company/company_run.log
+            rm -f /app/partner/partner_run.log
+            echo "✅ 日志文件已清理"
+            
+            cd /app/web_ui
+            # 使用环境变量或直接修改端口为 8080
+            export FLASK_RUN_PORT={{ .Values.webui.service.targetPort }}
+            exec python3 -c "
+            import sys
+            sys.path.insert(0, '/app')
+            from web_ui.app import app, socketio
+            import os
+            os.makedirs('/app/web_ui/templates', exist_ok=True)
+            os.makedirs('/app/web_ui/static', exist_ok=True)
+            print('✅ Web UI 服务启动在端口 {{ .Values.webui.service.targetPort }}')
+            socketio.run(app, host='0.0.0.0', port={{ .Values.webui.service.targetPort }}, debug=False, allow_unsafe_werkzeug=True)
+            "
+        ports:
+        - name: http
+          containerPort: {{ .Values.webui.service.targetPort }}
+          protocol: TCP
+        {{- if .Values.webui.env }}
+        env:
+        {{- include "mobile-mpc.commonEnv" . | nindent 8 }}
+        {{- with .Values.webui.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- else }}
+        env:
+        {{- include "mobile-mpc.commonEnv" . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.webui.livenessProbe }}
+        livenessProbe:
+          {{- if .Values.webui.livenessProbe.httpGet }}
+          httpGet:
+            path: {{ .Values.webui.livenessProbe.httpGet.path | default "/" }}
+            port: {{ .Values.webui.service.targetPort }}
+          {{- end }}
+          {{- if .Values.webui.livenessProbe.initialDelaySeconds }}
+          initialDelaySeconds: {{ .Values.webui.livenessProbe.initialDelaySeconds }}
+          {{- end }}
+          {{- if .Values.webui.livenessProbe.periodSeconds }}
+          periodSeconds: {{ .Values.webui.livenessProbe.periodSeconds }}
+          {{- end }}
+          {{- if .Values.webui.livenessProbe.timeoutSeconds }}
+          timeoutSeconds: {{ .Values.webui.livenessProbe.timeoutSeconds }}
+          {{- end }}
+          {{- if .Values.webui.livenessProbe.failureThreshold }}
+          failureThreshold: {{ .Values.webui.livenessProbe.failureThreshold }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.webui.readinessProbe }}
+        readinessProbe:
+          {{- if .Values.webui.readinessProbe.httpGet }}
+          httpGet:
+            path: {{ .Values.webui.readinessProbe.httpGet.path | default "/" }}
+            port: {{ .Values.webui.service.targetPort }}
+          {{- end }}
+          {{- if .Values.webui.readinessProbe.initialDelaySeconds }}
+          initialDelaySeconds: {{ .Values.webui.readinessProbe.initialDelaySeconds }}
+          {{- end }}
+          {{- if .Values.webui.readinessProbe.periodSeconds }}
+          periodSeconds: {{ .Values.webui.readinessProbe.periodSeconds }}
+          {{- end }}
+          {{- if .Values.webui.readinessProbe.timeoutSeconds }}
+          timeoutSeconds: {{ .Values.webui.readinessProbe.timeoutSeconds }}
+          {{- end }}
+          {{- if .Values.webui.readinessProbe.failureThreshold }}
+          failureThreshold: {{ .Values.webui.readinessProbe.failureThreshold }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.webui.volumeMounts }}
+        volumeMounts:
+        {{- toYaml .Values.webui.volumeMounts | nindent 8 }}
+        {{- end }}
+        {{- if .Values.global.resourcesEnabled }}
+        resources:
+          {{- toYaml .Values.webui.resources | nindent 10 }}
+        {{- end }}
+      {{- if .Values.webui.volumes }}
+      volumes:
+      {{- toYaml .Values.webui.volumes | nindent 6 }}
+      {{- end }}
+      {{- with .Values.webui.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.global.affinityEnabled }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: {{ .Values.global.affinity.key }}
+                operator: In
+                values:
+                {{- toYaml .Values.global.affinity.values | nindent 16 }}
+      {{- else }}
+        {{- with .Values.webui.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.webui.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+

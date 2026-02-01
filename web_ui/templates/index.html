@@ -4,7 +4,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>联邦学习Web UI - 跨机器通信</title>
+    <title>联邦学习Web UI - 跨机器通信 v8.0</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -70,6 +73,49 @@
             color: white;
         }
 
+
+        .model-card {
+            border: 1px solid #dee2e6;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .model-card:hover {
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .model-file-item {
+            padding: 0.5rem;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .model-file-item:last-child {
+            border-bottom: none;
+        }
+
+        .model-file-item:hover {
+            background-color: #f8f9fa;
+        }
+
+        .file-content-viewer {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
         .config-panel {
             background: #f8f9fa;
             border: 1px solid #dee2e6;
@@ -84,6 +130,10 @@
             <span class="navbar-brand mb-0 h1">
                 <i class="fas fa-network-wired me-2"></i>
                 联邦学习Web UI - 跨机器通信
+            </span>
+            <span class="badge {% if is_readonly %}bg-warning{% else %}bg-primary{% endif %} me-2">
+                <i class="fas fa-{% if is_readonly %}eye{% else %}user-shield{% endif %} me-1"></i>
+                {{ node_role.upper() }} 节点{% if is_readonly %} (只读){% endif %}
             </span>
             <div class="d-flex">
                 <span class="badge bg-success me-2" id="connection-status">
@@ -146,8 +196,9 @@
             </div>
         </div>
 
+        <!-- Company和Partner节点控制已注释：节点默认启动，不再由UI控制 -->
+        <!--
         <div class="row">
-            <!-- Company节点控制 -->
             <div class="col-lg-6 mb-4">
                 <div class="card status-card" id="company-card">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -169,23 +220,7 @@
                                 <span class="badge bg-secondary" id="company-status">未启动</span>
                             </div>
                         </div>
-
-                        <div class="mb-3">
-                            <label class="form-label">IP地址</label>
-                            <input type="text" class="form-control" id="company-ip" value="210.28.133.104">
-                        </div>
-
-                        <div class="row mb-3">
-                            <div class="col-6">
-                                <label class="form-label">Ray端口</label>
-                                <input type="number" class="form-control" id="company-ray-port" value="20001">
-                            </div>
-                            <div class="col-6">
-                                <label class="form-label">SPU端口</label>
-                                <input type="number" class="form-control" id="company-spu-port" value="11001">
-                            </div>
-                        </div>
-
+                        
                         <div class="d-grid gap-2">
                             <button class="btn btn-success" id="start-company-btn">
                                 <i class="fas fa-play me-2"></i>启动Company
@@ -198,7 +233,6 @@
                 </div>
             </div>
 
-            <!-- Partner节点控制 -->
             <div class="col-lg-6 mb-4">
                 <div class="card status-card" id="partner-card">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -220,23 +254,7 @@
                                 <span class="badge bg-secondary" id="partner-status">未启动</span>
                             </div>
                         </div>
-
-                        <div class="mb-3">
-                            <label class="form-label">IP地址</label>
-                            <input type="text" class="form-control" id="partner-ip" value="210.28.133.104">
-                        </div>
-
-                        <div class="row mb-3">
-                            <div class="col-6">
-                                <label class="form-label">SPU端口</label>
-                                <input type="number" class="form-control" id="partner-spu-port" value="11002">
-                            </div>
-                            <div class="col-6">
-                                <label class="form-label">连接端口</label>
-                                <input type="number" class="form-control" id="partner-connect-port" value="54001">
-                            </div>
-                        </div>
-
+                        
                         <div class="d-grid gap-2">
                             <button class="btn btn-success" id="start-partner-btn">
                                 <i class="fas fa-play me-2"></i>启动Partner
@@ -249,6 +267,7 @@
                 </div>
             </div>
         </div>
+        -->
 
         <!-- 训练控制 -->
         <div class="row mb-4">
@@ -277,38 +296,119 @@
 
                                 <div class="row mb-3">
                                     <div class="col-6">
-                                        <label class="form-label">当前步数</label>
-                                        <input type="text" class="form-control" id="current-step" readonly>
+                                        <label class="form-label">当前Epoch</label>
+                                        <input type="text" class="form-control" id="current-epoch" readonly value="0">
                                     </div>
                                     <div class="col-6">
-                                        <label class="form-label">总步数</label>
-                                        <input type="text" class="form-control" id="total-steps" readonly>
+                                        <label class="form-label">总Epoch数</label>
+                                        <input type="text" class="form-control" id="total-epochs" readonly value="0">
                                     </div>
                                 </div>
 
                                 <div class="row mb-3">
                                     <div class="col-6">
-                                        <label class="form-label">准确率</label>
-                                        <input type="text" class="form-control" id="accuracy" readonly>
+                                        <label class="form-label">当前步数</label>
+                                        <input type="text" class="form-control" id="current-step" readonly value="0">
                                     </div>
                                     <div class="col-6">
-                                        <label class="form-label">损失值</label>
-                                        <input type="text" class="form-control" id="loss" readonly>
+                                        <label class="form-label">准确率</label>
+                                        <input type="text" class="form-control" id="accuracy" readonly value="0.0000">
+                                    </div>
+                                </div>
+
+                                <div class="row mb-3">
+                                    <div class="col-6">
+                                        <label class="form-label">F1分数</label>
+                                        <input type="text" class="form-control" id="f1-score" readonly value="0.0000">
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label">误漏率(FOR)</label>
+                                        <input type="text" class="form-control" id="for-value" readonly value="0.0000">
+                                    </div>
+                                </div>
+
+                                <hr>
+                                <h6 class="text-muted mb-2">最终验证结果</h6>
+                                <div class="row mb-3">
+                                    <div class="col-4">
+                                        <label class="form-label small">最终准确率</label>
+                                        <input type="text" class="form-control form-control-sm bg-light"
+                                            id="final-accuracy" readonly value="-">
+                                    </div>
+                                    <div class="col-4">
+                                        <label class="form-label small">最终F1</label>
+                                        <input type="text" class="form-control form-control-sm bg-light" id="final-f1"
+                                            readonly value="-">
+                                    </div>
+                                    <div class="col-4">
+                                        <label class="form-label small">最终FOR</label>
+                                        <input type="text" class="form-control form-control-sm bg-light" id="final-for"
+                                            readonly value="-">
                                     </div>
                                 </div>
                             </div>
 
                             <div class="col-md-6">
+                                <h6 class="text-muted mb-3">⚙️ 训练参数配置</h6>
+                                <div class="mb-3">
+                                    <label class="form-label small">模型类型</label>
+                                    <select class="form-select form-select-sm" id="param-model">
+                                        <option value="SSLR">SSLR（逻辑回归）</option>
+                                        <option value="SSXGBoost">SSXGBoost（梯度提升树）</option>
+                                    </select>
+                                </div>
+                                <div class="row g-2 mb-3" id="epoch-batch-row">
+                                    <div class="col-6">
+                                        <label class="form-label small">训练轮数(Epochs)</label>
+                                        <input type="number" class="form-control form-control-sm" id="param-epochs"
+                                            value="10" min="1" max="100">
+                                    </div>
+                                    <div class="col-6" id="batch-group">
+                                        <label class="form-label small">批次大小</label>
+                                        <input type="number" class="form-control form-control-sm" id="param-batch-size"
+                                            value="1000" min="100" max="10000" step="100">
+                                    </div>
+                                </div>
+                                <div class="row g-2 mb-3" id="lr-row">
+                                    <div class="col-6" id="lr-group">
+                                        <label class="form-label small">学习率</label>
+                                        <input type="number" class="form-control form-control-sm" id="param-lr"
+                                            value="0.1" min="0.001" max="1" step="0.01">
+                                    </div>
+                                    <div class="col-6" id="val-steps-group">
+                                        <label class="form-label small">验证频率</label>
+                                        <input type="number" class="form-control form-control-sm" id="param-val-steps"
+                                            value="1" min="1" max="10">
+                                    </div>
+                                </div>
+                                <div class="row g-2 mb-3" id="xgb-params" style="display: none;">
+                                    <div class="col-6">
+                                        <label class="form-label small">树数量(n_estimators)</label>
+                                        <input type="number" class="form-control form-control-sm"
+                                            id="param-n-estimators" value="2" min="1" max="200">
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small">最大深度(max_depth)</label>
+                                        <input type="number" class="form-control form-control-sm" id="param-max-depth"
+                                            value="2" min="1" max="32">
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small">分桶数量(K_quantiles)</label>
+                                        <input type="number" class="form-control form-control-sm" id="param-k-quantiles"
+                                            value="1" min="1" max="100">
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small">正则化系数(reg_coef)</label>
+                                        <input type="number" class="form-control form-control-sm" id="param-reg-coef"
+                                            value="0.0" min="0" max="10" step="0.01">
+                                    </div>
+                                </div>
+
                                 <div class="d-grid gap-2">
                                     <button class="btn btn-primary" id="start-training-btn" disabled>
                                         <i class="fas fa-play me-2"></i>开始训练
                                     </button>
-                                    <button class="btn btn-warning" id="pause-training-btn" disabled>
-                                        <i class="fas fa-pause me-2"></i>暂停训练
-                                    </button>
-                                    <button class="btn btn-danger" id="stop-training-btn" disabled>
-                                        <i class="fas fa-stop me-2"></i>停止训练
-                                    </button>
+                                    <!-- 暂停和停止训练按钮已删除，只保留开始训练按钮 -->
                                 </div>
                             </div>
                         </div>
@@ -340,31 +440,28 @@
                 </div>
             </div>
 
-            <div class="col-lg-4">
+            <!-- 配置管理卡片已移除：IP和端口配置在Kubernetes环境中由Helm chart决定 -->
+        </div>
+
+        <!-- 模型参数展示区域 -->
+        <div class="row mt-4">
+            <div class="col-12">
                 <div class="card">
-                    <div class="card-header">
+                    <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="mb-0">
-                            <i class="fas fa-cog me-2"></i>配置管理
+                            <i class="fas fa-brain me-2"></i>训练模型参数
                         </h5>
+                        <button class="btn btn-sm btn-primary" id="refresh-models-btn">
+                            <i class="fas fa-sync-alt me-1"></i>刷新
+                        </button>
                     </div>
                     <div class="card-body">
-                        <div class="mb-3">
-                            <label class="form-label">Coordinator IP</label>
-                            <input type="text" class="form-control" id="coordinator-ip" value="210.28.133.104">
-                        </div>
-
-                        <div class="mb-3">
-                            <label class="form-label">Coordinator SPU端口</label>
-                            <input type="number" class="form-control" id="coordinator-spu-port" value="11003">
-                        </div>
-
-                        <div class="d-grid gap-2">
-                            <button class="btn btn-primary" id="save-config-btn">
-                                <i class="fas fa-save me-2"></i>保存配置
-                            </button>
-                            <button class="btn btn-outline-secondary" id="load-config-btn">
-                                <i class="fas fa-upload me-2"></i>加载配置
-                            </button>
+                        <div id="models-container">
+                            <div class="text-center text-muted py-4">
+                                <i class="fas fa-folder-open fa-3x mb-3"></i>
+                                <p>暂无训练完成的模型</p>
+                                <small>完成训练后，模型参数将显示在这里</small>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -383,12 +480,149 @@
         let systemState = {
             company_status: '未启动',
             partner_status: '未启动',
+            ray_status: '未启动',
             training_status: '未开始',
+            training_ready: false,
             current_step: 0,
             total_steps: 0,
             accuracy: 0.0,
-            loss: 0.0
+            loss: 0.0,
+            node_role: "{{ node_role }}",
+            is_readonly: {{ "true" if is_readonly else "false" }},
         };
+
+        let trainingDefaults = {
+            model: 'SSLR',
+            default_epochs: 10,
+            default_batch_size: 1000,
+            default_lr: 0.1,
+            validation_steps: 1,
+            n_estimators: 2,
+            max_depth: 2,
+            K_quantiles: 1,
+            reg_coef: 0.0
+        };
+
+        function toInt(value, fallback) {
+            if (value === undefined || value === null || value === '') return fallback;
+            const parsed = parseInt(value, 10);
+            return Number.isNaN(parsed) ? fallback : parsed;
+        }
+
+        function toFloat(value, fallback) {
+            if (value === undefined || value === null || value === '') return fallback;
+            const parsed = parseFloat(value);
+            return Number.isNaN(parsed) ? fallback : parsed;
+        }
+
+        function updateTrainingParamVisibility() {
+            const modelSelector = document.getElementById('param-model');
+            if (!modelSelector) {
+                return;
+            }
+            const model = modelSelector.value;
+            const isXGB = model === 'SSXGBoost';
+
+            const epochRow = document.getElementById('epoch-batch-row');
+            const lrRow = document.getElementById('lr-row');
+            const xgbParams = document.getElementById('xgb-params');
+
+            if (epochRow) {
+                epochRow.style.display = isXGB ? 'none' : '';
+            }
+            if (lrRow) {
+                lrRow.style.display = isXGB ? 'none' : '';
+            }
+            if (xgbParams) {
+                xgbParams.style.display = isXGB ? '' : 'none';
+            }
+        }
+
+        function setTrainingInputsFromDefaults() {
+            const modelSelector = document.getElementById('param-model');
+            if (modelSelector) {
+                modelSelector.value = trainingDefaults.model;
+            }
+            const epochsInput = document.getElementById('param-epochs');
+            if (epochsInput) {
+                epochsInput.value = trainingDefaults.default_epochs;
+            }
+            const batchInput = document.getElementById('param-batch-size');
+            if (batchInput) {
+                batchInput.value = trainingDefaults.default_batch_size;
+            }
+            const lrInput = document.getElementById('param-lr');
+            if (lrInput) {
+                lrInput.value = trainingDefaults.default_lr;
+            }
+            const valStepsInput = document.getElementById('param-val-steps');
+            if (valStepsInput) {
+                valStepsInput.value = trainingDefaults.validation_steps;
+            }
+            const nEstimatorsInput = document.getElementById('param-n-estimators');
+            if (nEstimatorsInput) {
+                nEstimatorsInput.value = trainingDefaults.n_estimators;
+            }
+            const maxDepthInput = document.getElementById('param-max-depth');
+            if (maxDepthInput) {
+                maxDepthInput.value = trainingDefaults.max_depth;
+            }
+            const kQuantilesInput = document.getElementById('param-k-quantiles');
+            if (kQuantilesInput) {
+                kQuantilesInput.value = trainingDefaults.K_quantiles;
+            }
+            const regCoefInput = document.getElementById('param-reg-coef');
+            if (regCoefInput) {
+                regCoefInput.value = trainingDefaults.reg_coef;
+            }
+            updateTrainingParamVisibility();
+        }
+
+        function applyTrainingConfig(trainingConfig = {}) {
+            trainingDefaults = {
+                model: trainingConfig.model ?? trainingDefaults.model,
+                default_epochs: toInt(trainingConfig.default_epochs, trainingDefaults.default_epochs),
+                default_batch_size: toInt(trainingConfig.default_batch_size, trainingDefaults.default_batch_size),
+                default_lr: toFloat(trainingConfig.default_lr, trainingDefaults.default_lr),
+                validation_steps: toInt(trainingConfig.validation_steps, trainingDefaults.validation_steps),
+                n_estimators: toInt(trainingConfig.n_estimators, trainingDefaults.n_estimators),
+                max_depth: toInt(trainingConfig.max_depth, trainingDefaults.max_depth),
+                K_quantiles: toInt(trainingConfig.K_quantiles, trainingDefaults.K_quantiles),
+                reg_coef: toFloat(trainingConfig.reg_coef, trainingDefaults.reg_coef)
+            };
+            setTrainingInputsFromDefaults();
+        }
+
+        function applyConfigToForm(config) {
+            if (!config) {
+                return;
+            }
+            // IP和端口配置已移除：在Kubernetes环境中由Helm chart决定
+            // 只应用训练参数配置
+            if (config.training) {
+                applyTrainingConfig(config.training);
+            } else {
+                setTrainingInputsFromDefaults();
+            }
+        }
+
+        function collectConfigFromForm() {
+            // IP和端口配置已移除：在Kubernetes环境中由Helm chart决定
+            // 只收集训练参数配置
+            return {
+                training: {
+                    model: document.getElementById('param-model').value,
+                    default_epochs: toInt(document.getElementById('param-epochs').value, trainingDefaults.default_epochs),
+                    default_batch_size: toInt(document.getElementById('param-batch-size').value, trainingDefaults.default_batch_size),
+                    default_lr: toFloat(document.getElementById('param-lr').value, trainingDefaults.default_lr),
+                    validation_steps: toInt(document.getElementById('param-val-steps').value, trainingDefaults.validation_steps),
+                    n_estimators: toInt(document.getElementById('param-n-estimators').value, trainingDefaults.n_estimators),
+                    max_depth: toInt(document.getElementById('param-max-depth').value, trainingDefaults.max_depth),
+                    K_quantiles: toInt(document.getElementById('param-k-quantiles').value, trainingDefaults.K_quantiles),
+                    reg_coef: toFloat(document.getElementById('param-reg-coef').value, trainingDefaults.reg_coef)
+                }
+            };
+        }
 
         // 连接状态
         socket.on('connect', function () {
@@ -427,34 +661,71 @@
         function updateSystemState(data) {
             Object.assign(systemState, data);
 
-            // 更新Company状态
-            updateNodeStatus('company', data.company_status);
+            // Company和Partner节点控制已注释，不再更新UI状态
+            // updateNodeStatus('company', data.company_status);
+            // updateNodeStatus('partner', data.partner_status);
 
-            // 更新Partner状态
-            updateNodeStatus('partner', data.partner_status);
-
-            // 更新训练状态
-            if (data.training_status) {
-                document.getElementById('training-status').textContent = data.training_status;
-                document.getElementById('training-status').className = getStatusBadgeClass(data.training_status);
+            // 更新训练状态（只在状态改变时更新，避免闪烁）
+            if (data.training_status && data.training_status !== systemState.training_status) {
+                systemState.training_status = data.training_status;
+                const trainingStatusElement = document.getElementById('training-status');
+                if (trainingStatusElement) {
+                    trainingStatusElement.textContent = data.training_status;
+                    trainingStatusElement.className = 'badge ' + getStatusBadgeClass(data.training_status) + ' me-3';
+                }
             }
 
+            // 更新Epoch信息
+            if (data.current_epoch !== undefined) {
+                document.getElementById('current-epoch').value = data.current_epoch;
+            }
+
+            if (data.total_epochs !== undefined) {
+                document.getElementById('total-epochs').value = data.total_epochs;
+                // 根据Epoch计算进度
+                const progress = data.total_epochs > 0 ? (data.current_epoch / data.total_epochs) * 100 : 0;
+                document.getElementById('training-progress').style.width = progress + '%';
+            }
+
+            // 更新Step信息
             if (data.current_step !== undefined) {
                 document.getElementById('current-step').value = data.current_step;
             }
 
-            if (data.total_steps !== undefined) {
-                document.getElementById('total-steps').value = data.total_steps;
-                const progress = data.total_steps > 0 ? (data.current_step / data.total_steps) * 100 : 0;
-                document.getElementById('training-progress').style.width = progress + '%';
-            }
-
+            // 更新实时指标
             if (data.accuracy !== undefined) {
                 document.getElementById('accuracy').value = data.accuracy.toFixed(4);
             }
 
+            if (data.f1_score !== undefined) {
+                document.getElementById('f1-score').value = data.f1_score.toFixed(4);
+            }
+
+            if (data.false_omission_rate !== undefined) {
+                document.getElementById('for-value').value = data.false_omission_rate.toFixed(4);
+            }
+
+            // 更新最终结果
+            if (data.final_accuracy !== undefined && data.final_accuracy > 0) {
+                document.getElementById('final-accuracy').value = data.final_accuracy.toFixed(4);
+                document.getElementById('final-accuracy').classList.add('fw-bold', 'text-success');
+            }
+
+            if (data.final_f1 !== undefined && data.final_f1 > 0) {
+                document.getElementById('final-f1').value = data.final_f1.toFixed(4);
+                document.getElementById('final-f1').classList.add('fw-bold', 'text-success');
+            }
+
+            if (data.final_for !== undefined && data.final_for > 0) {
+                document.getElementById('final-for').value = data.final_for.toFixed(4);
+                document.getElementById('final-for').classList.add('fw-bold', 'text-primary');
+            }
+
             if (data.loss !== undefined) {
-                document.getElementById('loss').value = data.loss.toFixed(6);
+                const lossElement = document.getElementById('loss');
+                if (lossElement) {
+                    lossElement.value = data.loss.toFixed(6);
+                }
             }
 
             // 更新按钮状态
@@ -478,9 +749,15 @@
         // 获取状态徽章样式
         function getStatusBadgeClass(status) {
             switch (status) {
+                // 节点状态
                 case '运行中': return 'bg-success';
                 case '启动中': return 'bg-warning';
                 case '已停止': return 'bg-danger';
+                // 训练状态
+                case '训练中': return 'bg-primary';
+                case 'PSI中': return 'bg-warning';
+                case '已完成': return 'bg-success';
+                case '未开始': return 'bg-secondary';
                 default: return 'bg-secondary';
             }
         }
@@ -497,20 +774,19 @@
 
         // 更新按钮状态
         function updateButtonStates() {
-            const companyRunning = systemState.company_status === '运行中';
-            const partnerRunning = systemState.partner_status === '运行中';
-            const bothRunning = companyRunning && partnerRunning;
+            // Company和Partner节点控制已注释，节点默认启动
+            // const companyRunning = systemState.company_status === '运行中';
+            // const partnerRunning = systemState.partner_status === '运行中';
+            const trainingRunning = systemState.training_status === '训练中' || systemState.training_status === 'PSI中';
 
-            // Company按钮
-            document.getElementById('start-company-btn').disabled = companyRunning;
-            document.getElementById('stop-company-btn').disabled = !companyRunning;
+            // Company和Partner按钮已注释
+            // document.getElementById('start-company-btn').disabled = companyRunning;
+            // document.getElementById('stop-company-btn').disabled = !companyRunning;
+            // document.getElementById('start-partner-btn').disabled = !companyRunning || partnerRunning;
+            // document.getElementById('stop-partner-btn').disabled = !partnerRunning;
 
-            // Partner按钮
-            document.getElementById('start-partner-btn').disabled = partnerRunning;
-            document.getElementById('stop-partner-btn').disabled = !partnerRunning;
-
-            // 训练按钮
-            document.getElementById('start-training-btn').disabled = !bothRunning;
+            // 训练按钮（节点默认启动，只检查训练状态）
+            document.getElementById('start-training-btn').disabled = trainingRunning;
         }
 
         // 添加日志条目
@@ -525,12 +801,24 @@
             `;
 
             logContainer.appendChild(logElement);
-            logContainer.scrollTop = logContainer.scrollHeight;
+
+            // ✅ 修复：只在用户没有手动滚动时才自动滚动到底部
+            const isScrolledToBottom = logContainer.scrollHeight - logContainer.scrollTop <= logContainer.clientHeight + 10;
+            if (isScrolledToBottom) {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
         }
 
         // 事件监听器
+        // Company和Partner节点控制已注释，节点默认启动
+        /*
         document.getElementById('start-company-btn').addEventListener('click', function () {
             fetch('/api/start_company', { method: 'POST' })
+
+            if (systemState.is_readonly) {
+                alert('⚠️ 当前为 Partner 节点（只读模式），无法执行此操作');
+                return;
+            }
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
@@ -545,6 +833,11 @@
 
         document.getElementById('stop-company-btn').addEventListener('click', function () {
             fetch('/api/stop_company', { method: 'POST' })
+
+            if (systemState.is_readonly) {
+                alert('⚠️ 当前为 Partner 节点（只读模式），无法执行此操作');
+                return;
+            }
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
@@ -559,6 +852,11 @@
 
         document.getElementById('start-partner-btn').addEventListener('click', function () {
             fetch('/api/start_partner', { method: 'POST' })
+
+            if (systemState.is_readonly) {
+                alert('⚠️ 当前为 Partner 节点（只读模式），无法执行此操作');
+                return;
+            }
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
@@ -573,6 +871,11 @@
 
         document.getElementById('stop-partner-btn').addEventListener('click', function () {
             fetch('/api/stop_partner', { method: 'POST' })
+
+            if (systemState.is_readonly) {
+                alert('⚠️ 当前为 Partner 节点（只读模式），无法执行此操作');
+                return;
+            }
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
@@ -584,37 +887,338 @@
                     }
                 });
         });
+        */
 
         document.getElementById('start-training-btn').addEventListener('click', function () {
-            fetch('/api/start_training', { method: 'POST' })
+            // 获取训练参数
+
+            if (systemState.is_readonly) {
+                alert('⚠️ 当前为 Partner 节点（只读模式），无法执行此操作');
+                return;
+            }
+            const params = {
+                model: document.getElementById('param-model').value,
+                n_epochs: toInt(document.getElementById('param-epochs').value, trainingDefaults.default_epochs),
+                batch_size: toInt(document.getElementById('param-batch-size').value, trainingDefaults.default_batch_size),
+                lr: toFloat(document.getElementById('param-lr').value, trainingDefaults.default_lr),
+                val_steps: toInt(document.getElementById('param-val-steps').value, trainingDefaults.validation_steps),
+                n_estimators: toInt(document.getElementById('param-n-estimators').value, trainingDefaults.n_estimators),
+                max_depth: toInt(document.getElementById('param-max-depth').value, trainingDefaults.max_depth),
+                K_quantiles: toInt(document.getElementById('param-k-quantiles').value, trainingDefaults.K_quantiles),
+                reg_coef: toFloat(document.getElementById('param-reg-coef').value, trainingDefaults.reg_coef)
+            };
+
+            console.log('🚀 启动训练，参数:', params);
+
+            fetch('/api/start_training', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(params)
+            })
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
+                        // 重置前端显示
+                        document.getElementById('current-epoch').value = 0;
+                        document.getElementById('total-epochs').value = params.n_epochs || 10;
+                        document.getElementById('current-step').value = 0;
+                        document.getElementById('accuracy').value = '0.0000';
+                        document.getElementById('f1-score').value = '0.0000';
+                        document.getElementById('for-value').value = '0.0000';
+                        document.getElementById('final-accuracy').value = '-';
+                        document.getElementById('final-f1').value = '-';
+                        document.getElementById('final-for').value = '-';
+                        document.getElementById('training-progress').style.width = '0%';
+                        // 清除最终结果的样式
+                        const finalAccElement = document.getElementById('final-accuracy');
+                        if (finalAccElement) {
+                            finalAccElement.classList.remove('fw-bold', 'text-success');
+                        }
+                        const finalF1Element = document.getElementById('final-f1');
+                        if (finalF1Element) {
+                            finalF1Element.classList.remove('fw-bold', 'text-success');
+                        }
+                        const finalForElement = document.getElementById('final-for');
+                        if (finalForElement) {
+                            finalForElement.classList.remove('fw-bold', 'text-primary');
+                        }
+
+                        // 立即更新训练状态显示（从"已完成"变为"PSI中"或"训练中"）
+                        if (data.training_status) {
+                            systemState.training_status = data.training_status;
+                            const trainingStatusElement = document.getElementById('training-status');
+                            if (trainingStatusElement) {
+                                trainingStatusElement.textContent = data.training_status;
+                                trainingStatusElement.className = 'badge ' + getStatusBadgeClass(data.training_status) + ' me-3';
+                            }
+                        } else {
+                            // 如果没有返回状态，默认设为"PSI中"（训练开始时会先执行PSI）
+                            systemState.training_status = 'PSI中';
+                            const trainingStatusElement = document.getElementById('training-status');
+                            if (trainingStatusElement) {
+                                trainingStatusElement.textContent = 'PSI中';
+                                trainingStatusElement.className = 'badge ' + getStatusBadgeClass('PSI中') + ' me-3';
+                            }
+                        }
+                        // 更新按钮状态
+                        updateButtonStates();
+
                         addLogEntry({
                             timestamp: new Date().toLocaleString(),
                             level: 'INFO',
-                            message: '训练启动命令已发送'
+                            message: `训练启动命令已发送 (Model: ${params.model}, Epochs: ${params.n_epochs}, Batch: ${params.batch_size}, LR: ${params.lr}, Trees: ${params.n_estimators}, Depth: ${params.max_depth})`
                         });
+                    } else if (data.status === 'error') {
+                        alert('启动训练失败: ' + data.message);
                     }
+                })
+                .catch(err => {
+                    console.error('启动训练失败:', err);
+                    alert('启动训练失败，请查看Console');
                 });
         });
 
+        const modelSelectorElement = document.getElementById('param-model');
+        if (modelSelectorElement) {
+            modelSelectorElement.addEventListener('change', updateTrainingParamVisibility);
+        }
+        setTrainingInputsFromDefaults();
+
+        // 配置管理按钮已移除：IP和端口配置在Kubernetes环境中由Helm chart决定
+        // 如果需要保存/加载训练参数配置，可以重新添加这些功能
+
         document.getElementById('clear-logs-btn').addEventListener('click', function () {
             document.getElementById('log-container').innerHTML = '';
+            lastCompanyLogSize = 0;
+            lastPartnerLogSize = 0;
+            console.log('日志已清除，计数器已重置');
         });
 
-        // 定期更新系统信息
+        // 定期更新系统信息和节点日志
+        let lastCompanyLogSize = 0;
+        let lastPartnerLogSize = 0;
+
+        // 页面加载时清除日志容器（防止显示旧数据）
+        console.log('页面加载，初始化日志系统...');
+
         setInterval(function () {
             fetch('/api/status')
                 .then(response => response.json())
                 .then(data => {
+                    // 更新系统信息
                     if (data.system_info) {
                         document.getElementById('cpu-usage').textContent = data.system_info.cpu_percent.toFixed(1) + '%';
                         document.getElementById('memory-usage').textContent = data.system_info.memory_percent.toFixed(1) + '%';
                         document.getElementById('disk-usage').textContent = data.system_info.disk_percent.toFixed(1) + '%';
                     }
+                    // ✅ 修复：同时更新节点状态，确保状态实时同步
+                    updateSystemState(data);
                 });
-        }, 5000);
+
+            // 轮询训练指标（准确、可靠，不受日志重复影响）
+            fetch('/api/training_metrics')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('📊 训练指标API返回:', data);
+
+                    // 更新Epoch和进度
+                    if (data.current_epoch !== undefined) {
+                        // 更新当前Epoch字段
+                        const currentEpochElement = document.getElementById('current-epoch');
+                        if (currentEpochElement) {
+                            currentEpochElement.value = data.current_epoch || 0;
+                        }
+
+                        // 更新总Epoch数字段
+                        if (data.total_epochs !== undefined) {
+                            const totalEpochsElement = document.getElementById('total-epochs');
+                            if (totalEpochsElement) {
+                                totalEpochsElement.value = data.total_epochs || 10;
+                            }
+                        }
+
+                        // 更新进度条
+                        if (data.total_epochs > 0) {
+                            const progressBar = document.getElementById('training-progress');
+                            if (progressBar) {
+                                const progress = (data.current_epoch / data.total_epochs) * 100;
+                                progressBar.style.width = progress + '%';
+                            }
+                        }
+                    }
+
+                    // 更新当前步数（只显示 Step 值）
+                    // 只有在有有效值时才更新，避免在训练过程中切换为0
+                    if (data.current_step !== undefined && data.current_step !== null) {
+                        const currentStepElement = document.getElementById('current-step');
+                        if (currentStepElement) {
+                            // 如果当前显示的值大于0，且新值为0，且状态不是"未开始"，则保持之前的值
+                            const currentValue = parseInt(currentStepElement.value) || 0;
+                            if (data.current_step === 0 && currentValue > 0 &&
+                                systemState.training_status !== '未开始' &&
+                                systemState.training_status !== '已完成') {
+                                // 保持之前的值，不更新为0
+                                console.log('⚠️ 跳过更新 Step 为 0，保持之前的值:', currentValue);
+                            } else {
+                                currentStepElement.value = data.current_step;
+                                console.log('✅ 更新 - Step:', data.current_step);
+                            }
+                        }
+                    }
+
+                    // 更新实时指标
+                    if (data.accuracy > 0) {
+                        const accuracyElement = document.getElementById('accuracy');
+                        if (accuracyElement) {
+                            accuracyElement.value = data.accuracy.toFixed(4);
+                            console.log('✅ 更新准确率:', data.accuracy);
+                        } else {
+                            console.warn('⚠️ 找不到accuracy元素');
+                        }
+                    }
+                    if (data.f1 > 0) {
+                        const f1Element = document.getElementById('f1-score');
+                        if (f1Element) {
+                            f1Element.value = data.f1.toFixed(4);
+                            console.log('✅ 更新F1:', data.f1);
+                        } else {
+                            console.warn('⚠️ 找不到f1-score元素');
+                        }
+                    }
+                    if (data.for >= 0) {
+                        const forElement = document.getElementById('for-value');
+                        if (forElement) {
+                            forElement.value = data.for.toFixed(4);
+                            console.log('✅ 更新FOR:', data.for);
+                        } else {
+                            console.warn('⚠️ 找不到for-value元素');
+                        }
+                    }
+
+                    // 更新最终结果
+                    if (data.final_accuracy !== null) {
+                        const finalAccElement = document.getElementById('final-accuracy');
+                        if (finalAccElement) {
+                            finalAccElement.value = data.final_accuracy.toFixed(4);
+                            finalAccElement.classList.add('fw-bold', 'text-success');
+                            console.log('🎊 最终准确率:', data.final_accuracy);
+                        }
+                    }
+                    if (data.final_f1 !== null) {
+                        const finalF1Element = document.getElementById('final-f1');
+                        if (finalF1Element) {
+                            finalF1Element.value = data.final_f1.toFixed(4);
+                            finalF1Element.classList.add('fw-bold', 'text-success');
+                            console.log('🎊 最终F1:', data.final_f1);
+                        }
+                    }
+                    if (data.final_for !== null) {
+                        const finalForElement = document.getElementById('final-for');
+                        if (finalForElement) {
+                            finalForElement.value = data.final_for.toFixed(4);
+                            finalForElement.classList.add('fw-bold', 'text-primary');
+                            console.log('🎊 最终FOR:', data.final_for);
+                        }
+                    }
+
+                    // 更新训练状态（只在状态改变时更新，避免闪烁）
+                    if (data.status && data.status !== systemState.training_status) {
+                        systemState.training_status = data.status;
+                        const trainingStatusElement = document.getElementById('training-status');
+                        if (trainingStatusElement) {
+                            trainingStatusElement.textContent = data.status;
+                            trainingStatusElement.className = 'badge ' + getStatusBadgeClass(data.status) + ' me-3';
+                        }
+                        // 🔥 修复：状态更新后，更新按钮状态（确保训练完成后按钮可以点击）
+                        updateButtonStates();
+                    }
+                })
+                .catch(err => console.log('获取训练指标失败:', err));
+
+            // 轮询Company日志（始终轮询，不判断状态）
+            fetch('/api/logs/company')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success' && data.logs) {
+                        // 只处理新增的日志行
+                        if (data.logs.length > lastCompanyLogSize) {
+                            data.logs.slice(lastCompanyLogSize).forEach(line => {
+                                // 跳过分隔符和空行
+                                if (!line.trim() || line.includes('====')) {
+                                    return;
+                                }
+
+                                const match = line.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] (.+)/);
+                                if (match) {
+                                    const timestamp = match[1];
+                                    const level = match[2];
+                                    const message = match[3];
+
+                                    addLogEntry({
+                                        timestamp: timestamp,
+                                        level: level,
+                                        message: message
+                                    });
+
+                                    // 只解析节点状态（训练指标由API提供，不再从日志解析）
+                                    if (message.includes('Ray runtime started')) {
+                                        console.log('检测到Ray启动，更新Company状态');
+                                        systemState.company_status = '运行中';
+                                        updateNodeStatus('company', '运行中');
+                                        updateButtonStates();
+                                    }
+                                }
+                            });
+                        }
+                        // 更新日志大小（在外面，防止重复读取）
+                        lastCompanyLogSize = data.logs.length;
+                    }
+                })
+                .catch(err => console.log('获取Company日志失败:', err));
+
+            // 轮询Partner日志（始终轮询）
+            fetch('/api/logs/partner')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success' && data.logs) {
+                        // 只处理新增的日志行
+                        if (data.logs.length > lastPartnerLogSize) {
+                            data.logs.slice(lastPartnerLogSize).forEach(line => {
+                                // 跳过分隔符和空行
+                                if (!line.trim() || line.includes('====')) {
+                                    return;
+                                }
+
+                                const match = line.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] (.+)/);
+                                if (match) {
+                                    const timestamp = match[1];
+                                    const level = match[2];
+                                    const message = match[3];
+
+                                    addLogEntry({
+                                        timestamp: timestamp,
+                                        level: level,
+                                        message: message
+                                    });
+
+                                    // 解析Partner状态
+                                    if (message.includes('Ray runtime started')) {
+                                        console.log('检测到Partner加入，更新Partner状态');
+                                        systemState.partner_status = '运行中';
+                                        updateNodeStatus('partner', '运行中');
+                                        updateButtonStates();
+                                    }
+                                }
+                            });
+                        }
+                        // 更新日志大小（在外面，防止重复读取）
+                        lastPartnerLogSize = data.logs.length;
+                    }
+                })
+                .catch(err => console.log('获取Partner日志失败:', err));
+        }, 1000);  // 从2000ms改为1000ms，更快地捕捉日志
 
         // 更新时间
         function updateTime() {
@@ -631,6 +1235,265 @@
             .then(data => {
                 updateSystemState(data);
             });
+
+        // ==================== 模型参数管理 ====================
+
+        // 加载模型列表
+        function loadModels() {
+            fetch('/api/models/list')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        displayModels(data.models);
+                    } else {
+                        console.error('加载模型失败:', data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('加载模型失败:', error);
+                });
+        }
+
+        // 显示模型列表
+        function displayModels(models) {
+            const container = document.getElementById('models-container');
+
+            if (models.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-folder-open fa-3x mb-3"></i>
+                        <p>暂无训练完成的模型</p>
+                        <small>完成训练后，模型参数将显示在这里</small>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            models.forEach((model, index) => {
+                const nodeLabel = model.node_type === 'company' ? 'Company (甲方)' : 'Partner (乙方)';
+                const nodeBadge = model.node_type === 'company' ? 'bg-primary' : 'bg-success';
+
+                html += `
+                    <div class="model-card">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <div>
+                                <h6 class="mb-1">
+                                    <span class="badge ${nodeBadge} me-2">${nodeLabel}</span>
+                                    ${model.model_type}
+                                </h6>
+                                <small class="text-muted">${model.model_name}</small>
+                            </div>
+                            <div>
+                                ${!systemState.is_readonly ? `
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteModel('${model.node_type}', '${model.model_name}')">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                        
+                        ${Object.keys(model.info).length > 0 ? `
+                        <div class="alert alert-info py-2 mb-3">
+                            <small><strong>模型信息:</strong> ${JSON.stringify(model.info, null, 2).replace(/[{}"]/g, '').replace(/,/g, ', ')}</small>
+                        </div>
+                        ` : ''}
+                        
+                        <div class="mb-2">
+                            <strong>模型文件:</strong>
+                        </div>
+                        <div class="border rounded">
+                            ${model.files.map(file => `
+                                <div class="model-file-item">
+                                    <div>
+                                        <i class="fas fa-file me-2"></i>
+                                        <strong>${file.name}</strong>
+                                        <small class="text-muted ms-2">(${formatFileSize(file.size)})</small>
+                                    </div>
+                                    <div>
+                                        ${canViewFile(file.name) ? `
+                                        <button class="btn btn-sm btn-outline-primary me-1" 
+                                                onclick="viewModelFile('${model.node_type}', '${model.model_name}', '${file.name}')">
+                                            <i class="fas fa-eye"></i> 查看
+                                        </button>
+                                        ` : ''}
+                                        <button class="btn btn-sm btn-outline-success" 
+                                                onclick="downloadModelFile('${model.node_type}', '${model.model_name}', '${file.name}')">
+                                            <i class="fas fa-download"></i> 下载
+                                        </button>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        // 格式化文件大小
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            else if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+            else return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        // 判断文件是否可以查看
+        function canViewFile(filename) {
+            const viewableExtensions = ['.json', '.csv', '.txt', '.log'];
+            return viewableExtensions.some(ext => filename.toLowerCase().endsWith(ext));
+        }
+
+        // 查看模型文件
+        function viewModelFile(nodeType, modelName, filename) {
+            fetch(`/api/models/view/${nodeType}/${modelName}/${filename}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showFileContentModal(filename, data.content);
+                    } else {
+                        alert('查看文件失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('查看文件失败:', error);
+                    alert('查看文件失败: ' + error.message);
+                });
+        }
+
+        // 显示文件内容模态框
+        function showFileContentModal(filename, content) {
+            // 创建模态框
+            const modalHtml = `
+                <div class="modal fade" id="fileContentModal" tabindex="-1">
+                    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">
+                                    <i class="fas fa-file-alt me-2"></i>${filename}
+                                </h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="file-content-viewer">${escapeHtml(content)}</div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // 移除旧的模态框
+            const oldModal = document.getElementById('fileContentModal');
+            if (oldModal) {
+                oldModal.remove();
+            }
+
+            // 添加新模态框
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('fileContentModal'));
+            modal.show();
+
+            // 模态框关闭后移除
+            document.getElementById('fileContentModal').addEventListener('hidden.bs.modal', function () {
+                this.remove();
+            });
+        }
+
+        // 转义HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 下载模型文件
+        function downloadModelFile(nodeType, modelName, filename) {
+            const url = `/api/models/download/${nodeType}/${modelName}/${filename}`;
+            window.open(url, '_blank');
+        }
+
+        // 删除模型
+        function deleteModel(nodeType, modelName) {
+            if (!confirm(`确定要删除模型 ${modelName} 吗？此操作不可恢复。`)) {
+                return;
+            }
+
+            fetch(`/api/models/delete/${nodeType}/${modelName}`, {
+                method: 'POST'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert('模型已删除');
+                        loadModels(); // 重新加载模型列表
+                    } else {
+                        alert('删除失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('删除模型失败:', error);
+                    alert('删除失败: ' + error.message);
+                });
+        }
+
+        // 刷新模型按钮事件
+        document.getElementById('refresh-models-btn').addEventListener('click', function () {
+            loadModels();
+        });
+
+        // 页面加载时加载模型列表
+        loadModels();
+
+        // 每30秒自动刷新模型列表
+        setInterval(loadModels, 30000);
+
+        // 模型选择变化事件
+        document.getElementById('param-model').addEventListener('change', function () {
+            const model = this.value;
+            const epochBatchRow = document.getElementById('epoch-batch-row');
+            const lrRow = document.getElementById('lr-row');
+            const xgbParams = document.getElementById('xgb-params');
+
+            if (model === 'SSLR') {
+                epochBatchRow.style.display = 'block';
+                lrRow.style.display = 'block';
+                xgbParams.style.display = 'none';
+                document.getElementById('param-epochs').setAttribute('min', '1');
+                document.getElementById('param-epochs').setAttribute('max', '100');
+                document.getElementById('param-batch-size').setAttribute('min', '100');
+                document.getElementById('param-batch-size').setAttribute('max', '10000');
+                document.getElementById('param-lr').setAttribute('min', '0.001');
+                document.getElementById('param-lr').setAttribute('max', '1');
+                document.getElementById('param-val-steps').setAttribute('min', '1');
+                document.getElementById('param-val-steps').setAttribute('max', '10');
+            } else if (model === 'SSXGBoost') {
+                epochBatchRow.style.display = 'none';
+                lrRow.style.display = 'none';
+                xgbParams.style.display = 'block';
+                document.getElementById('param-epochs').setAttribute('min', '1');
+                document.getElementById('param-epochs').setAttribute('max', '100');
+                document.getElementById('param-batch-size').setAttribute('min', '100');
+                document.getElementById('param-batch-size').setAttribute('max', '10000');
+                document.getElementById('param-lr').setAttribute('min', '0.001');
+                document.getElementById('param-lr').setAttribute('max', '1');
+                document.getElementById('param-val-steps').setAttribute('min', '1');
+                document.getElementById('param-val-steps').setAttribute('max', '10');
+                document.getElementById('param-n-estimators').setAttribute('min', '1');
+                document.getElementById('param-n-estimators').setAttribute('max', '200');
+                document.getElementById('param-max-depth').setAttribute('min', '1');
+                document.getElementById('param-max-depth').setAttribute('max', '32');
+                document.getElementById('param-k-quantiles').setAttribute('min', '1');
+                document.getElementById('param-k-quantiles').setAttribute('max', '100');
+                document.getElementById('param-reg-coef').setAttribute('min', '0');
+                document.getElementById('param-reg-coef').setAttribute('max', '10');
+            }
+        });
     </script>
 </body>
 

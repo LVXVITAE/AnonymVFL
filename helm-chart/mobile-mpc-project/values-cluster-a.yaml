@@ -1,0 +1,90 @@
+# 集群 A (Company 集群) 配置
+# 只部署 Company 节点和 Web UI，不部署 Partner
+
+global:
+  imageRegistry: ""  # 留空使用本地镜像
+
+# Company 节点配置
+company:
+  enabled: true  # 启用 Company 节点
+  
+  image:
+    repository: "mobile-mpc-company"
+    tag: "v1.0.16"
+    pullPolicy: "Never"  # 使用本地镜像
+  
+  replicas: 1
+  
+  resources:
+    requests:
+      cpu: "8"
+      memory: "4Gi"
+    limits:
+      cpu: "12"
+      memory: "8Gi"
+  
+  # 服务配置 - 使用 NodePort 暴露端口以支持跨集群通信
+  service:
+    type: NodePort
+    ports:
+      spu: 9394          # Company SPU 端口
+      ray: 6379          # Ray Head 端口
+      coordinator: 9396  # Coordinator 端口
+    nodePorts:
+      spu: 30394         # 固定 NodePort
+      ray: 30379
+      coordinator: 30396
+  
+  env:
+    - name: NODE_ROLE
+      value: "company"
+    - name: COMPANY_SPU_ADDR
+      value: "0.0.0.0:9394"
+    - name: COORDINATOR_SPU_ADDR
+      value: "0.0.0.0:9396"
+    - name: RAY_HEAD_ADDR
+      value: "0.0.0.0:6379"
+    # hostNetwork 模式：直接使用节点 IP 和服务端口（无需 NodePort）
+    - name: PARTNER_SPU_ADDR
+      value: "192.168.58.2:9395"  # 集群 B 节点 IP + 直接端口
+
+# Partner 节点配置
+partner:
+  enabled: false  # 集群 A 不部署 Partner
+
+# Web UI 配置
+webui:
+  enabled: true  # 启用 Web UI
+  
+  image:
+    repository: "mobile-mpc-company"  # 使用 company 镜像（包含 Web UI）
+    tag: "v1.0.16"
+    pullPolicy: "Never"
+  
+  replicas: 1
+  
+  resources:
+    requests:
+      cpu: "0.2"
+      memory: "512Mi"
+    limits:
+      cpu: "0.5"
+      memory: "1Gi"
+  
+  # 服务配置
+  service:
+    type: NodePort
+    port: 8080
+    targetPort: 8080
+    nodePort: 30080  # 固定 NodePort，方便访问
+  
+  env:
+    - name: NODE_ROLE
+      value: "company"
+
+# 持久化存储配置
+persistence:
+  enabled: true
+  path: "/data/mobile-mpc"  # 宿主机路径
+  storageClass: ""  # 使用 hostPath
+

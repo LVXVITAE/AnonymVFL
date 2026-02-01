@@ -21,4 +21,4 @@ ray start --address "${A_IP}:${PORT_RAY}" \
   --object-store-memory=2000000000
 
 # 确保必要目录存在
-# mkdir -p /home/dxn/mobile_project3/partner/models/lr_partner || true
+# mkdir -p ./models/lr_partner || true

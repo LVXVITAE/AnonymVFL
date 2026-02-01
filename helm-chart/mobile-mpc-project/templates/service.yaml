@@ -1,0 +1,133 @@
+{{- if .Values.company.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-company-svc
+  labels:
+    {{- include "mobile-mpc.company.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.company.service.type }}
+  ports:
+  - port: {{ .Values.company.service.ports.spu }}
+    targetPort: spu
+    protocol: TCP
+    name: spu
+    {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.spu }}
+    nodePort: {{ .Values.company.service.nodePorts.spu }}
+    {{- end }}
+  - port: {{ .Values.company.service.ports.coordinator }}
+    targetPort: coordinator
+    protocol: TCP
+    name: coordinator
+    {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.coordinator }}
+    nodePort: {{ .Values.company.service.nodePorts.coordinator }}
+    {{- end }}
+  - port: {{ .Values.company.service.ports.ray }}
+    targetPort: ray
+    protocol: TCP
+    name: ray
+    {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.ray }}
+    nodePort: {{ .Values.company.service.nodePorts.ray }}
+    {{- end }}
+  {{- if .Values.company.service.ports.webui }}
+  - port: {{ .Values.company.service.ports.webui }}
+    targetPort: webui
+    protocol: TCP
+    name: webui
+    {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.webui }}
+    nodePort: {{ .Values.company.service.nodePorts.webui }}
+    {{- end }}
+  {{- end }}
+  selector:
+    {{- include "mobile-mpc.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: company
+{{- end }}
+
+{{- if .Values.partner.enabled }}
+---
+# Partner Service - 支持 NodePort 用于跨集群通信
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-partner-svc
+  labels:
+    {{- include "mobile-mpc.partner.labels" . | nindent 4 }}
+spec:
+  {{- if eq .Values.partner.service.type "Headless" }}
+  clusterIP: None  # Headless Service - 返回 Pod IP
+  {{- else }}
+  type: {{ .Values.partner.service.type }}
+  {{- end }}
+  ports:
+  - port: {{ .Values.partner.service.ports.spu }}
+    targetPort: spu
+    protocol: TCP
+    name: spu
+    {{- if and (eq .Values.partner.service.type "NodePort") .Values.partner.service.nodePorts.spu }}
+    nodePort: {{ .Values.partner.service.nodePorts.spu }}
+    {{- end }}
+  # Ray 端口 - 用于跨集群 Ray Worker 通信
+  - port: {{ .Values.partner.service.ports.rayClient }}
+    targetPort: ray-client
+    protocol: TCP
+    name: ray-client
+    {{- if and (eq .Values.partner.service.type "NodePort") .Values.partner.service.nodePorts.rayClient }}
+    nodePort: {{ .Values.partner.service.nodePorts.rayClient }}
+    {{- end }}
+  - port: {{ .Values.partner.service.ports.rayDashboard }}
+    targetPort: ray-dashboard
+    protocol: TCP
+    name: ray-dashboard
+    {{- if and (eq .Values.partner.service.type "NodePort") .Values.partner.service.nodePorts.rayDashboard }}
+    nodePort: {{ .Values.partner.service.nodePorts.rayDashboard }}
+    {{- end }}
+  selector:
+    {{- include "mobile-mpc.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: partner
+{{- end }}
+
+{{- if .Values.company.enabled }}
+---
+# Coordinator Service (指向 Company Pod，因为 Company 兼任 Coordinator)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-coordinator-svc
+  labels:
+    {{- include "mobile-mpc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: coordinator
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ .Values.company.service.ports.coordinator }}
+    targetPort: coordinator
+    protocol: TCP
+    name: coordinator
+  selector:
+    {{- include "mobile-mpc.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: company
+{{- end }}
+
+{{- if .Values.webui.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-webui
+  labels:
+    {{- include "mobile-mpc.webui.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.webui.service.type }}
+  ports:
+  - port: {{ .Values.webui.service.port }}
+    targetPort: {{ .Values.webui.service.targetPort }}
+    protocol: TCP
+    name: http
+    {{- if and (eq .Values.webui.service.type "NodePort") .Values.webui.service.nodePort }}
+    nodePort: {{ .Values.webui.service.nodePort }}
+    {{- end }}
+  selector:
+    {{- include "mobile-mpc.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: webui
+{{- end }}

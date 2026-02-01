@@ -27,6 +27,9 @@ colorlog==6.7.0
 # 进程管理
 supervisor==4.2.5
 
+# Kubernetes API 客户端（用于读取 Pod 日志和控制 Deployment）
+kubernetes>=28.0.0
+
 # 可选：如果需要更高级的功能
 # redis==4.6.0  # 用于分布式状态管理
 # celery==5.3.1  # 用于异步任务处理

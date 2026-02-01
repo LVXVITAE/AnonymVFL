@@ -1,0 +1,72 @@
+========================================
+🎉 移动多方安全计算项目已成功部署！
+========================================
+
+您的 {{ .Chart.Name }} 版本 {{ .Chart.Version }} 已部署到命名空间 {{ .Release.Namespace }}
+
+部署的组件：
+{{- if .Values.company.enabled }}
+✓ Company 节点（甲方/服务器）
+{{- end }}
+{{- if .Values.partner.enabled }}
+✓ Partner 节点（乙方/客户端）
+{{- end }}
+{{- if .Values.coordinator.enabled }}
+✓ Coordinator 节点（协调者）
+{{- end }}
+{{- if .Values.webui.enabled }}
+✓ Web UI 界面
+{{- end }}
+
+访问 Web UI：
+{{- if .Values.webui.enabled }}
+{{- if .Values.webui.ingress.enabled }}
+  通过 Ingress:
+  {{- range .Values.webui.ingress.hosts }}
+  http{{ if $.Values.webui.ingress.tls }}s{{ end }}://{{ .host }}
+  {{- end }}
+{{- else if eq .Values.webui.service.type "LoadBalancer" }}
+  
+  获取外部 IP：
+  export SERVICE_IP=$(kubectl get svc {{ include "mobile-mpc.fullname" . }}-webui -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "访问地址: http://$SERVICE_IP:{{ .Values.webui.service.port }}"
+
+{{- else if eq .Values.webui.service.type "NodePort" }}
+  
+  获取访问地址：
+  export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
+  export NODE_PORT=$(kubectl get svc {{ include "mobile-mpc.fullname" . }}-webui -n {{ .Release.Namespace }} -o jsonpath='{.spec.ports[0].nodePort}')
+  echo "访问地址: http://$NODE_IP:$NODE_PORT"
+
+{{- else if eq .Values.webui.service.type "ClusterIP" }}
+  
+  使用端口转发访问：
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "mobile-mpc.fullname" . }}-webui {{ .Values.webui.service.port }}:{{ .Values.webui.service.port }}
+  访问地址: http://localhost:{{ .Values.webui.service.port }}
+{{- end }}
+{{- end }}
+
+查看 Pod 状态：
+  kubectl get pods -n {{ .Release.Namespace }} -l "app.kubernetes.io/instance={{ .Release.Name }}"
+
+查看日志：
+  # Company 节点日志
+  kubectl logs -n {{ .Release.Namespace }} -l "app.kubernetes.io/component=company" -f
+
+  # Partner 节点日志
+  kubectl logs -n {{ .Release.Namespace }} -l "app.kubernetes.io/component=partner" -f
+
+服务地址：
+{{- if .Values.company.enabled }}
+  Company SPU: {{ include "mobile-mpc.fullname" . }}-company-svc:{{ .Values.company.service.ports.spu }}
+  Ray Head:    {{ include "mobile-mpc.fullname" . }}-company-svc:{{ .Values.company.service.ports.ray }}
+{{- end }}
+{{- if .Values.partner.enabled }}
+  Partner SPU: {{ include "mobile-mpc.fullname" . }}-partner-svc:{{ .Values.partner.service.ports.spu }}
+{{- end }}
+
+更多命令：
+  helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
+  helm get values {{ .Release.Name }} -n {{ .Release.Namespace }}
+  helm upgrade {{ .Release.Name }} ./helm-chart/mobile-mpc-project -n {{ .Release.Namespace }}
+

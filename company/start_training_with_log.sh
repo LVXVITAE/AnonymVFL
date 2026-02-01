@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# === 只运行训练，输出到日志 ===
+A_IP="210.28.133.104"
+B_IP="210.28.133.104"
+PORT_RAY="20001"
+PORT_COMPANY_SPU="11001"
+PORT_PARTNER_SPU="11002"
+PORT_COORD_SPU="11003"
+COM_PATH="."
+PAR_PATH="../partner"
+LOG_FILE="${COM_PATH}/company_run.log"
+
+# 接收训练参数（从命令行或使用默认值）
+N_EPOCHS="${1:-10}"
+BATCH_SIZE="${2:-1000}"
+LEARNING_RATE="${3:-0.1}"
+VAL_STEPS="${4:-1}"
+MODEL="${5:-SSLR}"
+N_ESTIMATORS="${6:-2}"
+MAX_DEPTH="${7:-2}"
+K_QUANTILES="${8:-1}"
+REG_COEF="${9:-0.0}"
+BUCKETS_PATH="${10:-${COM_PATH}/buckets.npy}"
+
+if [ "${MODEL}" = "SSXGBoost" ]; then
+  COMPANY_MODEL_DIR="${COM_PATH}/models/xgb_company"
+  PARTNER_MODEL_DIR="${PAR_PATH}/models/xgb_partner"
+else
+  COMPANY_MODEL_DIR="${COM_PATH}/models/lr_company"
+  PARTNER_MODEL_DIR="${PAR_PATH}/models/lr_partner"
+fi
+
+cd "$(dirname "$0")"
+mkdir -p "${COMPANY_MODEL_DIR}" "${PARTNER_MODEL_DIR}"
+
+# 分隔符
+echo "" >> "$LOG_FILE"
+echo "==================== 开始训练 ====================" >> "$LOG_FILE"
+echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 开始训练任务" | tee -a "$LOG_FILE"
+echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 训练参数 - Model: ${MODEL}, Epochs: ${N_EPOCHS}, Batch: ${BATCH_SIZE}, LR: ${LEARNING_RATE}, ValSteps: ${VAL_STEPS}, Trees: ${N_ESTIMATORS}, Depth: ${MAX_DEPTH}, Quantiles: ${K_QUANTILES}, Reg: ${REG_COEF}" | tee -a "$LOG_FILE"
+
+# 运行训练
+python3 truerun.py \
+  --mode="multi_distributed" \
+  --ray_head_addr="${A_IP}:${PORT_RAY}" \
+  --company_spu_addr="${A_IP}:${PORT_COMPANY_SPU}" \
+  --partner_spu_addr="${B_IP}:${PORT_PARTNER_SPU}" \
+  --coordinator_spu_addr="${A_IP}:${PORT_COORD_SPU}" \
+  --run_psi=True \
+  \
+  --path_to_company_train_dataset="${COM_PATH}/host_train.csv" \
+  --path_to_company_val_dataset="${COM_PATH}/host_test.csv" \
+  --path_to_company_share="${COM_PATH}/company_share.csv" \
+  --path_to_company_model_save_dir="${COMPANY_MODEL_DIR}" \
+  --share_y=False \
+  \
+  --path_to_partner_train_dataset="${PAR_PATH}/guest_train.csv" \
+  --path_to_partner_val_dataset="${PAR_PATH}/guest_test.csv" \
+  --path_to_partner_share="${PAR_PATH}/partner_share.csv" \
+  --path_to_partner_model_save_dir="${PARTNER_MODEL_DIR}" \
+  --path_to_buckets="${BUCKETS_PATH}" \
+  \
+  --model="${MODEL}" \
+  --n_epochs=${N_EPOCHS} \
+  --batch_size=${BATCH_SIZE} \
+  --val_steps=${VAL_STEPS} \
+  --lr=${LEARNING_RATE} \
+  --n_estimators=${N_ESTIMATORS} \
+  --max_depth=${MAX_DEPTH} \
+  --K_quantiles=${K_QUANTILES} \
+  --reg_coef=${REG_COEF} \
+  2>&1 | while IFS= read -r line; do
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [Training] $line" | tee -a "$LOG_FILE"
+done
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 训练完成" | tee -a "$LOG_FILE"
+

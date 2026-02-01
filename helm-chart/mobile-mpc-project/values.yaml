@@ -1,0 +1,324 @@
+# 默认配置值
+global:
+  # 镜像仓库地址
+  imageRegistry: "registry.example.com/mpc/"
+  imagePullPolicy: IfNotPresent
+  
+  # 亲和性配置
+  affinityEnabled: false
+  affinity:
+    key: kubernetes.io/hostname
+    values:
+      - node-1
+  
+  # 资源限制开关
+  resourcesEnabled: true
+  
+  # 公共标签和注解
+  commonLabels: {}
+  commonAnnotations: {}
+  
+  # 容忍度
+  tolerations: []
+
+# Company 节点配置（甲方/服务器）
+company:
+  enabled: true
+  name: company
+  replicaCount: 1  # 默认启动，不再由 Web UI 控制
+  
+  image:
+    repository: mobile-mpc-project
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  
+  # SPU 地址配置 (address - 用于其他节点连接)
+  spuAddr: "mpc-test-mobile-mpc-project-company-svc:9394"  # Company Service 名称
+  partnerSpuAddr: "mpc-test-mobile-mpc-project-partner-svc:9395"  # Partner Service 名称
+  coordinatorSpuAddr: "mpc-test-mobile-mpc-project-company-svc:9396"  # Coordinator 独立端口
+  rayHeadAddr: "company-svc:6379"
+  
+  # 服务配置
+  service:
+    type: ClusterIP
+    ports:
+      spu: 9394          # Company 端口
+      coordinator: 9396  # Coordinator 端口
+      ray: 6379
+      webui: 8080
+  
+  # 资源限制
+  resources:
+    limits:
+      cpu: "12"
+      memory: 8Gi
+    requests:
+      cpu: "8"  # 增加到 8 CPU，足够运行多个 SPU Runtime Actor
+      memory: 4Gi
+  
+  # 环境变量
+  env:
+    - name: NODE_ROLE
+      value: "company"
+    - name: LOG_LEVEL
+      value: "INFO"
+    - name: JAX_PLATFORMS
+      value: "cpu"
+  
+  # 持久化存储
+  persistence:
+    enabled: false
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    path: /data
+  
+  # 额外的标签和注解
+  extraLabels: {}
+  extraAnnotations: {}
+  
+  # 节点选择器
+  nodeSelector: {}
+  
+  # 亲和性
+  affinity: {}
+  
+  # 容忍度
+  tolerations: []
+
+# Partner 节点配置（乙方/客户端）
+partner:
+  enabled: true
+  name: partner
+  replicaCount: 1  # 默认启动，不再由 Web UI 控制
+  
+  image:
+    repository: mobile-mpc-project
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  
+  # SPU 地址配置
+  spuAddr: "0.0.0.0:9395"
+  companySpuAddr: "mpc-test-mobile-mpc-project-company-svc:9394"
+  coordinatorSpuAddr: "mpc-test-mobile-mpc-project-company-svc:9394"
+  rayHeadAddr: "company-svc:6379"
+  
+  # 服务配置
+  service:
+    type: ClusterIP
+    ports:
+      spu: 9395
+      # Ray 端口 - 用于跨集群通信
+      rayClient: 10001    # Ray Client port
+      rayDashboard: 8265  # Ray Dashboard port
+    # NodePort 配置 - 用于跨集群通信
+    # 当 service.type 设置为 NodePort 时，这些端口会被暴露
+    nodePorts:
+      spu: 30095         # 默认 NodePort for SPU
+      rayClient: 30001   # 默认 NodePort for Ray Client
+      rayDashboard: 30265 # 默认 NodePort for Ray Dashboard
+  
+  # 跨集群配置
+  crossCluster:
+    enabled: false  # 是否启用跨集群通信
+    # Partner 节点的外部访问地址（供 Company 连接）
+    # 格式: <NodeIP>:<NodePort> 或 <LoadBalancerIP>:<Port>
+    externalAddress: ""  # 例如: "192.168.49.3:30001"
+  
+  # 资源限制
+  resources:
+    limits:
+      cpu: "12"
+      memory: 8Gi
+    requests:
+      cpu: "8"  # 增加到 8 CPU，足够运行多个 SPU Runtime Actor
+      memory: 4Gi
+  
+  # 环境变量
+  env:
+    - name: NODE_ROLE
+      value: "partner"
+    - name: LOG_LEVEL
+      value: "INFO"
+    - name: JAX_PLATFORMS
+      value: "cpu"
+  
+  # 持久化存储
+  persistence:
+    enabled: false
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    path: /data
+  
+  # 额外的标签和注解
+  extraLabels: {}
+  extraAnnotations: {}
+  
+  # 节点选择器
+  nodeSelector: {}
+  
+  # 亲和性
+  affinity: {}
+  
+  # 容忍度
+  tolerations: []
+
+# Coordinator 节点配置（协调者，可选）
+coordinator:
+  enabled: false
+  name: coordinator
+  replicaCount: 1
+  
+  image:
+    repository: mobile-mpc-project
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  
+  spuAddr: "0.0.0.0:9396"
+  
+  service:
+    type: ClusterIP
+    ports:
+      spu: 9396
+  
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+    requests:
+      cpu: "0.5"
+      memory: 1Gi
+
+# Web UI 配置
+webui:
+  enabled: true
+  replicaCount: 1
+  
+  image:
+    repository: mobile-mpc-project-webui
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: LoadBalancer
+    port: 8080
+    targetPort: 8080
+    # nodePort: 30080  # 如果使用 NodePort
+  
+  resources:
+    limits:
+      cpu: "0.5"
+      memory: 1Gi
+    requests:
+      cpu: "0.2"
+      memory: 512Mi
+  
+  # 环境变量
+  env: []
+  # - name: API_URL
+  #   value: "http://api.example.com"
+  
+  # 健康检查探针（端口会自动使用 service.targetPort）
+  livenessProbe:
+    httpGet:
+      path: /
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  
+  # 卷挂载
+  volumeMounts: []
+  # - name: config
+  #   mountPath: /app/config
+  
+  # 卷
+  volumes: []
+  # - name: config
+  #   configMap:
+  #     name: webui-config
+  
+  # 额外的标签和注解
+  extraLabels: {}
+  extraAnnotations: {}
+  
+  # 节点选择器
+  nodeSelector: {}
+  
+  # 亲和性
+  affinity: {}
+  
+  # 容忍度
+  tolerations: []
+  
+  # Ingress 配置
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations:
+      # kubernetes.io/ingress.class: nginx
+      # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: mpc-project.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    #  - secretName: mpc-project-tls
+    #    hosts:
+    #      - mpc-project.example.com
+
+# 持久化存储全局配置
+persistence:
+  enabled: false
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  nfsServer: ""
+  path: /data/k8s
+  pvSize: 51Gi
+  pvcSize: 50Gi
+
+# 服务账户配置
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod 安全上下文
+podSecurityContext:
+  fsGroup: 1000
+
+# 容器安全上下文
+securityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+
+# 自动扩缩容（可选）
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# 镜像拉取密钥
+imagePullSecrets: []
+# - name: regcred
+
+# 名称覆盖
+nameOverride: ""
+fullnameOverride: ""
+

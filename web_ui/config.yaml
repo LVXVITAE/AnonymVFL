@@ -1,46 +1,35 @@
-# 联邦学习Web UI配置文件
-# 支持跨机器通信的分布式联邦学习系统
-
-# Company节点配置
 company:
-  ip: "210.28.133.104"          # Company节点IP地址
-  port_ray: 20001               # Ray集群端口
-  port_spu: 11001               # SPU通信端口
-  path: "/home/dxn/mobile_project3/company"  # Company脚本路径
-
-# Partner节点配置  
-partner:
-  ip: "210.28.133.104"          # Partner节点IP地址
-  port_spu: 11002               # SPU通信端口
-  path: "/home/dxn/mobile_project3/partner"  # Partner脚本路径
-
-# Coordinator协调器配置
+  ip: 210.28.133.104
+  port_ray: 20001
+  port_spu: 11001
+  path: company
 coordinator:
-  ip: "210.28.133.104"          # Coordinator节点IP地址
-  port_spu: 11003               # SPU通信端口
-
-# 网络配置
-network:
-  timeout: 30                   # 网络超时时间(秒)
-  retry_count: 3                # 重试次数
-  heartbeat_interval: 10        # 心跳间隔(秒)
-
-# 训练配置
-training:
-  default_epochs: 10            # 默认训练轮数
-  default_batch_size: 1000      # 默认批次大小
-  default_lr: 0.1               # 默认学习率
-  validation_steps: 1           # 验证频率
-
-# 日志配置
+  ip: 210.28.133.104
+  port_spu: 11003
 logging:
-  max_logs: 1000                # 最大日志条数
-  log_level: "INFO"             # 日志级别
-  log_file: "federated_learning.log"  # 日志文件
-
-# Web UI配置
+  log_file: federated_learning.log
+  log_level: INFO
+  max_logs: 1000
+network:
+  heartbeat_interval: 10
+  retry_count: 3
+  timeout: 30
+partner:
+  ip: 210.28.133.104
+  port_spu: 11002
+  path: partner 
+training:
+  K_quantiles: 1
+  default_batch_size: 1000
+  default_epochs: 10
+  default_lr: 0.1
+  max_depth: 2
+  model: SSLR
+  n_estimators: 2
+  reg_coef: 0
+  validation_steps: 1
 web_ui:
-  host: "0.0.0.0"              # Web服务监听地址
-  port: 5000                   # Web服务端口
-  debug: true                  # 调试模式
-  auto_reload: true            # 自动重载
+  auto_reload: true
+  debug: true
+  host: 0.0.0.0
+  port: 5000

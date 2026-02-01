@@ -1,0 +1,221 @@
+{{- if .Values.partner.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-partner
+  labels:
+    {{- include "mobile-mpc.partner.labels" . | nindent 4 }}
+    {{- with .Values.partner.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.partner.extraAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.partner.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mobile-mpc.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: partner
+  template:
+    metadata:
+      labels:
+        {{- include "mobile-mpc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: partner
+        {{- with .Values.partner.extraLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.partner.extraAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # 🌐 启用 hostNetwork 以支持跨集群直接通信
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet  # 保留 Kubernetes DNS 解析
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "mobile-mpc.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: partner
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: {{ include "mobile-mpc.image" (dict "image" .Values.partner.image "Chart" .Chart "Values" .Values) }}
+        imagePullPolicy: {{ .Values.partner.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            echo "🚀 启动 Partner 节点..."
+            
+            # 🔥 清理旧的 Ray 资源（防止端口冲突和连接问题）
+            echo "🧹 清理旧的 Ray Worker 资源..."
+            ray stop --force || true
+            sleep 2
+            
+            # 设置环境变量（Ray Worker 需要）
+            export JAX_PLATFORMS=cpu
+            export XLA_FLAGS="--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false"
+            export OMP_NUM_THREADS=1
+            export RAY_BACKEND_LOG_LEVEL=info
+            
+            # 优先使用环境变量（跨集群场景），否则使用 Service 名称（单集群场景）
+            if [ -n "$RAY_HEAD_ADDR" ]; then
+              RAY_HEAD_ADDRESS="$RAY_HEAD_ADDR"
+              echo "📍 使用跨集群 Ray Head 地址: $RAY_HEAD_ADDRESS"
+            else
+              COMPANY_SERVICE="{{ include "mobile-mpc.fullname" . }}-company-svc"
+              RAY_HEAD_ADDRESS="$COMPANY_SERVICE:{{ .Values.company.service.ports.ray }}"
+              echo "📍 使用单集群 Ray Head 地址: $RAY_HEAD_ADDRESS"
+            fi
+            
+            echo "📍 Ray Head 地址: $RAY_HEAD_ADDRESS"
+            echo "📍 资源标签: partner=10"
+            echo "📍 CPU 数量: {{ .Values.partner.resources.requests.cpu | default 4 }}"
+            
+            # 等待 Company 节点和 Ray Head 启动
+            echo "⏳ 等待 Company Ray Head 准备就绪..."
+            MAX_RETRIES=30
+            
+            # 从 RAY_HEAD_ADDRESS 中提取主机和端口
+            RAY_HEAD_HOST=$(echo $RAY_HEAD_ADDRESS | cut -d: -f1)
+            RAY_HEAD_PORT=$(echo $RAY_HEAD_ADDRESS | cut -d: -f2)
+            
+            for i in $(seq 1 $MAX_RETRIES); do
+              if nc -z $RAY_HEAD_HOST $RAY_HEAD_PORT 2>/dev/null || \
+                 timeout 2 bash -c "echo > /dev/tcp/$RAY_HEAD_HOST/$RAY_HEAD_PORT" 2>/dev/null; then
+                echo "✅ Ray Head 已就绪"
+                break
+              fi
+              if [ $i -eq $MAX_RETRIES ]; then
+                echo "⚠️  Ray Head 连接检查超时，继续尝试连接..."
+              else
+                echo "⏳ 等待 Ray Head... ($i/$MAX_RETRIES)"
+                sleep 2
+              fi
+            done
+            
+            # 启动 Ray Worker 节点（自动重连循环）
+            echo "🎯 启动 Ray Worker 节点（Partner）..."
+            echo "💡 Ray Worker 会在连接断开时自动重启并重新连接到新的 Ray Head"
+            echo ""
+            
+            # 🔥 循环启动 Ray Worker，实现自动重连
+            # 当 Company Ray Head 重启时，Partner Worker 会自动重新连接
+            while true; do
+                echo "⏰ $(date '+%Y-%m-%d %H:%M:%S') - 启动/重连 Ray Worker..."
+                
+                # 清理旧的 Ray 资源
+                ray stop --force 2>/dev/null || true
+                sleep 2
+                
+                # 启动 Ray Worker（阻塞模式）
+                # 当 Ray Head 断开时，raylet 会退出，ray start 也会退出
+                # 获取 Host IP (使用 hostNetwork 后，Pod IP 就是 Host IP)
+                export HOST_IP=$(hostname -i | awk '{print $1}')
+                echo "📍 Host IP: $HOST_IP"
+                echo "🌐 使用 hostNetwork 模式，直接使用节点 IP"
+                
+                {{- if .Values.partner.crossCluster.enabled }}
+                # 跨集群模式：使用 Host IP 作为对外通告地址
+                echo "🌐 启用跨集群通信模式"
+                ray start \
+                  --address=$RAY_HEAD_ADDRESS \
+                  --node-ip-address=$HOST_IP \
+                  --resources='{"partner": 10}' \
+                  --num-cpus={{ .Values.partner.resources.requests.cpu | default 4 }} \
+                  --block
+                {{- else }}
+                # 单集群模式：使用 Host IP
+                ray start \
+                  --address=$RAY_HEAD_ADDRESS \
+                  --node-ip-address=$HOST_IP \
+                  --resources='{"partner": 10}' \
+                  --num-cpus={{ .Values.partner.resources.requests.cpu | default 4 }} \
+                  --block
+                {{- end }}
+                
+                # 如果 ray start 退出（Ray Head 断开或崩溃）
+                EXIT_CODE=$?
+                echo ""
+                echo "⚠️  Ray Worker 退出 (exit code: $EXIT_CODE)"
+                echo "🔄 5秒后自动重启并重新连接..."
+                sleep 5
+            done
+        ports:
+        - name: spu
+          containerPort: {{ .Values.partner.service.ports.spu }}
+          protocol: TCP
+        # Ray 端口
+        - name: ray-client
+          containerPort: {{ .Values.partner.service.ports.rayClient }}
+          protocol: TCP
+        - name: ray-dashboard
+          containerPort: {{ .Values.partner.service.ports.rayDashboard }}
+          protocol: TCP
+        env:
+        {{- include "mobile-mpc.commonEnv" . | nindent 8 }}
+        # 跨集群通信配置
+        {{- if .Values.partner.crossCluster.enabled }}
+        - name: CROSS_CLUSTER_ENABLED
+          value: "true"
+        - name: EXTERNAL_ADDRESS
+          value: {{ .Values.partner.crossCluster.externalAddress | quote }}
+        # 获取 Node IP 用于 Ray Worker
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        {{- end }}
+        {{- with .Values.partner.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        - name: models
+          mountPath: /app/partner/models
+        - name: logs
+          mountPath: /app/logs
+        - name: dshm
+          mountPath: /dev/shm
+        {{- if .Values.global.resourcesEnabled }}
+        resources:
+          {{- toYaml .Values.partner.resources | nindent 10 }}
+        {{- end }}
+      volumes:
+      {{- include "mobile-mpc.volumes" .Values.partner | nindent 6 }}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Gi
+      {{- with .Values.partner.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.global.affinityEnabled }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: {{ .Values.global.affinity.key }}
+                operator: In
+                values:
+                {{- toYaml .Values.global.affinity.values | nindent 16 }}
+      {{- else }}
+        {{- with .Values.partner.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.partner.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+
