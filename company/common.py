@@ -189,6 +189,31 @@ def compute_accuracy(y_true: np.ndarray, y_pred: np.ndarray):
     y_pred = y_pred.reshape(-1, 1)
     return np.mean(y_true == y_pred)
 
+def compute_f1_metric(y_true : np.ndarray, y_pred : np.ndarray):
+    y_true = y_true.reshape(-1, 1)
+    y_pred = y_pred.reshape(-1, 1)
+    positive_mask = (y_true == 0)
+    negative_mask = (y_true == 1)
+    pred_positive = (y_pred == 0)
+    pred_negative = (y_pred == 1)
+    tp = np.sum(positive_mask & pred_positive)
+    fp = np.sum(negative_mask & pred_positive)
+    fn = np.sum(positive_mask & pred_negative)
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+    return 2 * (precision * recall) / (precision + recall + 1e-8)
+
+def compute_for_metric(y_true : np.ndarray, y_pred : np.ndarray):
+    y_true = y_true.reshape(-1, 1)
+    y_pred = y_pred.reshape(-1, 1)
+    positive_mask = (y_true == 0)
+    negative_mask = (y_true == 1)
+    # pred_positive = (y_pred == 0)
+    pred_negative = (y_pred == 1)
+    fn = np.sum(positive_mask & pred_negative)
+    tn = np.sum(negative_mask & pred_negative)
+    return fn / (fn + tn + 1e-8)
+
 # 加载数据集，开发测试用
 
 
@@ -197,7 +222,7 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
     实现了训练测试集划分以及标签（y）01/独热编码
     """
     if dataset == "pima" or dataset == "lbw" or dataset == "pcs" or dataset == "uis":
-        data = pd.read_csv(os.path.join(
+        data = pd.read_csv(os.path.join(os.path.dirname(__file__),
             "Datasets", f"{dataset}.csv")).to_numpy()
         train_data, test_data = train_test_split(data, shuffle=False)
         train_X = train_data[:, :-1]
@@ -206,7 +231,7 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         test_y = test_data[:, -1].reshape(-1, 1)
 
     elif dataset == "gisette" or dataset == "arcene":
-        folder = os.path.join("Datasets", dataset)
+        folder = os.path.join(os.path.dirname(__file__), "Datasets", dataset)
         train_X = np.loadtxt(os.path.join(folder, f"{dataset}_train.data"))
         train_y = np.loadtxt(os.path.join(folder, f"{dataset}_train.labels"))
         train_y[train_y == -1] = 0
@@ -229,7 +254,7 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         test_y = test_y.astype(int).reshape(-1, 1)
 
     elif dataset == "risk":
-        dir_path = os.path.join("Datasets", "data", "data")
+        dir_path = os.path.join(os.path.dirname(__file__), "Datasets", "data", "data")
         train = pd.read_csv(os.path.join(dir_path, "risk_assessment_all.csv"))
         test = pd.read_csv(os.path.join(
             dir_path, "risk_assessment_all_test.csv"))
@@ -239,7 +264,7 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         test_y = test["y"].to_numpy().reshape(-1, 1)
 
     elif dataset == "breast":
-        dir_path = os.path.join("Datasets", "data", "data")
+        dir_path = os.path.join(os.path.dirname(__file__), "Datasets", "data", "data")
         guest = pd.read_csv(os.path.join(dir_path, "breast_hetero_guest.csv"))
         host = pd.read_csv(os.path.join(dir_path, "breast_hetero_host.csv"))
         all = pd.concat([host, guest], join='inner', axis=1)
@@ -248,7 +273,7 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
 
     elif dataset == "shop":
-        dir_path = os.path.join("Datasets", "data", "data")
+        dir_path = os.path.join(os.path.dirname(__file__), "Datasets", "data", "data")
         guest = pd.read_csv(os.path.join(dir_path, "guest_train.csv"))
         host = pd.read_csv(os.path.join(dir_path, "host_train.csv"))
         all = pd.concat([host, guest], join='inner', axis=1)
@@ -321,3 +346,56 @@ class MPCInitializer:
         heu_config['encoding'] = encoding
         self.partner_heu = sf.HEU(
             heu_config, self.spu.cluster_def['runtime_config']['field'])
+
+from secretflow.device import PYUObject, SPUObject
+from secretflow import SPU, PYU
+from secretflow.data import FedNdarray
+
+class SSML:
+    def __init__(self, devices: dict):
+        """
+        初始化秘密共享机器学习模型
+        ## Args:
+         - devices : 每个字段的值应为SPU或PYU。例如：
+
+           devices = {
+            'spu': spu,
+            'company': company,
+            'partner': partner,
+           }
+        """
+        assert 'company' in devices and 'partner' in devices and isinstance(
+            devices['company'], PYU) and isinstance(devices['partner'], PYU), "devices must contain 'company' and 'partner' as PYU devices"
+        self.company = devices['company']
+        self.partner = devices['partner']
+        if 'spu' in devices and isinstance(devices['spu'], SPU):
+            self.spu = devices['spu']
+        else:
+            self.spu = None
+    
+    def fit(self, X : SPUObject, y : SPUObject | PYUObject, X_test : FedNdarray | None = None, y_test : PYUObject | None = None):
+        raise NotImplementedError("Subclasses should implement this method.")
+
+    def predict(self, X : FedNdarray, device : PYU)  -> PYUObject:
+        raise NotImplementedError("Subclasses should implement this method.")
+
+    @staticmethod
+    def score(y_true: PYUObject, y_pred: PYUObject) -> dict:
+        assert  y_true.device == y_pred.device, "y_true and y_pred must be on the same device"
+        val_device = y_true.device
+        acc_score = val_device(compute_accuracy)(y_true, y_pred)
+        f1_score = val_device(compute_f1_metric)(y_true, y_pred)
+        for_score = val_device(compute_for_metric)(y_true, y_pred)
+        return {
+            'accuracy': sf.reveal(acc_score),
+            'f1_metric': sf.reveal(f1_score),
+            'for_metric': sf.reveal(for_score)
+        }
+    def save(self, paths: dict, ext: str = 'npy'):
+        raise NotImplementedError("Subclasses should implement this method.")
+    
+    @classmethod
+    def load(cls, devices: dict, paths: dict):
+        raise NotImplementedError("Subclasses should implement this method.")
+    
+  

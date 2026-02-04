@@ -1,5 +1,7 @@
 from time import time
 import os
+import json
+import dill
 from common import load_dataset
 import numpy as np
 import secretflow as sf
@@ -12,8 +14,6 @@ from secretflow.data import FedNdarray
 from secretflow.data.ndarray import load, PartitionWay
 from tqdm.contrib import tzip
 from tqdm import tqdm
-import dill
-import json
 
 
 class TreeNode:

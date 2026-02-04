@@ -1,7 +1,7 @@
 from SharedVariable import SharedVariable
 import numpy as np
 from tqdm import trange, tqdm
-from common import out_dom
+from common import out_dom, compute_accuracy
 import jax.numpy as jnp
 import secretflow as sf
 from secretflow.device import SPUObject, PYUObject
@@ -9,13 +9,14 @@ from secretflow import SPU, PYU
 from secretflow.data import FedNdarray, PartitionWay
 from secretflow.data.ndarray import load
 from common import approx_sigmoid, sigmoid, softmax, load_dataset
+from common import SSML
 import os, json
 
-class SSLR:
+class SSLR(SSML):
     def __init__(self, devices: dict, lambda_ : float = 0, approx : bool = True):
         """
         ## Args: 
-         - devices : 应包含四个字段，每个字段的值应为SPU或PYU。例如：
+         - devices : 每个字段的值应为SPU或PYU。例如：
 
            devices = {
             'spu': spu,
@@ -30,10 +31,8 @@ class SSLR:
         """
         self.lambda_ = lambda_
         self.approx = approx
-        assert 'spu' in devices and isinstance(devices['spu'], SPU), "devices must contain 'spu' of type SPU"
-        self.spu = devices['spu']
-        self.company = devices['company']
-        self.partner = devices['partner']
+        self.pred_threshold = 0.5
+        super().__init__(devices)
 
     def _forward(self, X : SPUObject) -> SPUObject | PYUObject:
         """
@@ -64,7 +63,7 @@ class SSLR:
         w = load({self.company: w1, self.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
         return w
 
-    def predict(self, X : FedNdarray, device : PYU, threshold: float = 0.33)  -> PYUObject:
+    def predict(self, X : FedNdarray, device : PYU)  -> PYUObject:
         """
         ## Args:
          - X: 输入纵向划分的特征矩阵
@@ -97,7 +96,7 @@ class SSLR:
                 return (logits > threshold).astype(int)
             else:
                 return np.argmax(logits, axis=1)
-        y = device(to_int_labels, static_argnames=['threshold'])(y, threshold)
+        y = device(to_int_labels, static_argnames=['threshold'])(y, self.pred_threshold)
 
         return y
 
@@ -166,7 +165,7 @@ class SSLR:
             y_batch = self.train_label_keeper(get_item, static_argnames=['keys'])(y, keys)
             Xs.append(X_batch)
             ys.append(y_batch)
-        steps = 0
+        steps = 1
         accs = []
         f1s = []
         fOrs = []
@@ -182,17 +181,17 @@ class SSLR:
                 self._backward(X, y, y_pred, lr / t)
                 if validate and steps % val_steps == 0:
                     y_pred = self.predict(X_test, y_test.device)
-                    def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
-                        y_true = y_true.reshape(-1,1)
-                        y_pred = y_pred.reshape(-1,1)
-                        # 调试输出：查看y_true和y_pred的实际值
-                        # print(f"DEBUG - y_true unique values: {np.unique(y_true)}")
-                        # print(f"DEBUG - y_pred unique values: {np.unique(y_pred)}")
-                        # print(f"DEBUG - y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
-                        # print(f"DEBUG - y_true first 100 values: {y_true[:100].flatten()}")
-                        # print(f"DEBUG - y_pred first 100 values: {y_pred[:100].flatten()}")
-                        return np.mean(y_true == y_pred)
-                    def compute_f1(y_true : np.ndarray, y_pred : np.ndarray):
+                    # def compute_accuracy(y_true : np.ndarray, y_pred : np.ndarray):
+                    #     y_true = y_true.reshape(-1,1)
+                    #     y_pred = y_pred.reshape(-1,1)
+                    #     # 调试输出：查看y_true和y_pred的实际值
+                    #     # print(f"DEBUG - y_true unique values: {np.unique(y_true)}")
+                    #     # print(f"DEBUG - y_pred unique values: {np.unique(y_pred)}")
+                    #     # print(f"DEBUG - y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
+                    #     # print(f"DEBUG - y_true first 100 values: {y_true[:100].flatten()}")
+                    #     # print(f"DEBUG - y_pred first 100 values: {y_pred[:100].flatten()}")
+                    #     return np.mean(y_true == y_pred)
+                    def compute_f1_metric(y_true : np.ndarray, y_pred : np.ndarray):
                         y_true = y_true.reshape(-1,1)
                         y_pred = y_pred.reshape(-1,1)
                         # print(f"DEBUG F1 - y_true range: [{np.min(y_true)}, {np.max(y_true)}]")
@@ -208,7 +207,7 @@ class SSLR:
                         f1 = 2 * (precision * recall) / (precision + recall + 1e-8)  
                         return f1
                     
-                    def compute_fOr(y_true : np.ndarray, y_pred : np.ndarray):
+                    def compute_for_metric(y_true : np.ndarray, y_pred : np.ndarray):
                         y_true = y_true.reshape(-1,1)
                         y_pred = y_pred.reshape(-1,1)
                         # print(f"DEBUG FOR - y_true range: [{np.min(y_true)}, {np.max(y_true)}]")
@@ -223,8 +222,8 @@ class SSLR:
                         return fOr
                     
                     acc = y_test.device(compute_accuracy)(y_test, y_pred)
-                    f1 = y_test.device(compute_f1)(y_test, y_pred)
-                    fOr = y_test.device(compute_fOr)(y_test, y_pred)
+                    f1 = y_test.device(compute_f1_metric)(y_test, y_pred)
+                    fOr = y_test.device(compute_for_metric)(y_test, y_pred)
                     acc = sf.reveal(acc)
                     f1 = sf.reveal(f1)
                     fOr = sf.reveal(fOr)
@@ -281,22 +280,43 @@ class SSLR:
         self.company(save_model)(w1, paths['company'])
         self.partner(save_model)(w2, paths['partner'])
 
-    def load(self, paths):
+    @classmethod
+    def load(cls, devices, paths):
+        """
+        ## Args: 
+         - devices : 每个字段的值应为SPU或PYU。例如：
+
+           devices = {
+            'spu': spu,
+            'company': company,
+            'partner': partner,
+           }
+
+         - paths: 加载模型的文件夹路径列表，包含company和partner的路径。例如：
+        paths = {
+            'company': 'path/to/company/model/dir',
+            'partner': 'path/to/partner/model/dir'
+        }
+        """
         def load_model(path : str):
             info = json.load(open(os.path.join(path, 'info.json'), 'r'))
             ext = info['save_as']
             if ext == 'csv':
-                w = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',')
+                w = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',',ndmin=2)
             else:
                 w = np.load(os.path.join(path, 'weight.npy'))
             return w, info
-        w1, info1 = self.company(load_model)(paths['company'])
-        w2, info2 = self.partner(load_model)(paths['partner'])
+        w1, info1 = devices['company'](load_model,num_returns = 2)(paths['company'])
+        w2, info2 = devices['partner'](load_model,num_returns = 2)(paths['partner'])
+        info1 = sf.reveal(info1)
+        info2 = sf.reveal(info2)
         assert info1 == info2, "Model info mismatch between company and partner"
-        self.w = load({self.company: w1, self.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
-        self.in_features, self.out_features = info1['shape']
-        self.lambda_ = info1['lambda_']
-        self.approx = info1['approx']
+        info = info1
+        model = cls(devices, lambda_=info['lambda_'], approx=info['approx'])
+        assert model.company == devices['company'] and model.partner == devices['partner'], "Devices mismatch"
+        model.w = load({model.company: w1, model.partner: w2}, partition_way=PartitionWay.HORIZONTAL)
+        model.in_features, model.out_features = info['shape']
+        return model
 
 # 运行本文件直接执行这个函数
 def SSLR_test(dataset):
@@ -308,13 +328,10 @@ def SSLR_test(dataset):
     spu = mpc_init.spu
     company = mpc_init.company
     partner = mpc_init.partner
-    coordinator = mpc_init.coordinator
     devices = {
         'spu': spu,
         'company': company,
-        'partner': partner,
-        'coordinator': coordinator,
-        'active_party': company
+        'partner': partner
     }
 
     train_X, train_y, test_X, test_y = load_dataset(dataset)
@@ -327,11 +344,16 @@ def SSLR_test(dataset):
 
     model = SSLR(devices, approx=True)
     accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
-    model.save({
-        'company': './company_model',
-        'partner': './partner_model'
-    },ext='csv')
+    paths = {
+        'company': f'SSLR_{dataset}_company',
+        'partner': f'SSLR_{dataset}_partner'
+    }
+    model.save(paths,ext='npy')
     plt.plot(accs,label = "SSLR",color = "blue")
+
+    model = SSLR.load({'company': company, 'partner': partner}, paths)
+    pred_y = model.predict(test_X, test_y.device)  # 测试加载是否成功
+    print(model.score(test_y, pred_y))
 
     test_X = np.hstack([sf.reveal(test_X.partitions[company]), sf.reveal(test_X.partitions[partner])])
     test_y = sf.reveal(test_y)
@@ -520,5 +542,4 @@ if __name__ == "__main__":
     # LR_test("mnist")
     # for dataset in ["pima","pcs","uis","gisette","arcene"]:
     #     LR_test(dataset)
-    # SSLR_test("breast")
-    SSLR_test("shop")
+    SSLR_test("breast")
