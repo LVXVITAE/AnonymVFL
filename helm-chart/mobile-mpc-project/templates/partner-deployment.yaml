@@ -179,6 +179,8 @@ spec:
           mountPath: /app/data
         - name: models
           mountPath: /app/partner/models
+        - name: datasets
+          mountPath: /app/partner/Datasets/uploads
         - name: logs
           mountPath: /app/logs
         - name: dshm
@@ -189,6 +191,8 @@ spec:
         {{- end }}
       volumes:
       {{- include "mobile-mpc.volumes" .Values.partner | nindent 6 }}
+      - name: datasets
+        emptyDir: {}
       - name: dshm
         emptyDir:
           medium: Memory

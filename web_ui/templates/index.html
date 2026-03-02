@@ -404,6 +404,75 @@
                                     </div>
                                 </div>
 
+                                <!-- 数据集选择 -->
+                                <div class="mb-3" id="dataset-section">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <label class="form-label small mb-0"><i
+                                                class="fas fa-database me-1"></i>数据集配置</label>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                            id="refresh-datasets-btn" onclick="loadDatasets()">
+                                            <i class="fas fa-sync-alt"></i> 刷新
+                                        </button>
+                                    </div>
+                                    <div class="border rounded p-2" style="background:#f8f9fa;">
+                                        <div class="row g-2">
+                                            {% if not is_readonly %}
+                                            <!-- Company WebUI：只显示 Company 自身数据集 -->
+                                            <div class="col-12">
+                                                <label class="form-label small text-primary mb-1">训练集</label>
+                                                <div class="input-group input-group-sm">
+                                                    <select class="form-select form-select-sm"
+                                                        id="dataset-company-train"></select>
+                                                    <label class="btn btn-outline-secondary" title="上传新文件">
+                                                        <i class="fas fa-upload"></i>
+                                                        <input type="file" accept=".csv" style="display:none"
+                                                            onchange="uploadDataset(this,'company','company-train')">
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label small text-primary mb-1">验证集</label>
+                                                <div class="input-group input-group-sm">
+                                                    <select class="form-select form-select-sm"
+                                                        id="dataset-company-val"></select>
+                                                    <label class="btn btn-outline-secondary" title="上传新文件">
+                                                        <i class="fas fa-upload"></i>
+                                                        <input type="file" accept=".csv" style="display:none"
+                                                            onchange="uploadDataset(this,'company','company-val')">
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            {% else %}
+                                            <!-- Partner WebUI：只显示 Partner 自身数据集 -->
+                                            <div class="col-12">
+                                                <label class="form-label small text-success mb-1">训练集</label>
+                                                <div class="input-group input-group-sm">
+                                                    <select class="form-select form-select-sm"
+                                                        id="dataset-partner-train"></select>
+                                                    <label class="btn btn-outline-secondary" title="上传新文件">
+                                                        <i class="fas fa-upload"></i>
+                                                        <input type="file" accept=".csv" style="display:none"
+                                                            onchange="uploadDataset(this,'partner','partner-train')">
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label small text-success mb-1">验证集</label>
+                                                <div class="input-group input-group-sm">
+                                                    <select class="form-select form-select-sm"
+                                                        id="dataset-partner-val"></select>
+                                                    <label class="btn btn-outline-secondary" title="上传新文件">
+                                                        <i class="fas fa-upload"></i>
+                                                        <input type="file" accept=".csv" style="display:none"
+                                                            onchange="uploadDataset(this,'partner','partner-val')">
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="d-grid gap-2">
                                     <button class="btn btn-primary" id="start-training-btn" disabled>
                                         <i class="fas fa-play me-2"></i>开始训练
@@ -467,6 +536,105 @@
                 </div>
             </div>
         </div>
+
+        <!-- 推理区域（仅 Company 节点可见） -->
+        {% if not is_readonly %}
+        <div class="row mt-4" id="infer-section">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="fas fa-search me-2"></i>模型推理
+                        </h5>
+                        <span class="badge bg-info" id="infer-status-badge">空闲</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <!-- 模型配置 -->
+                            <div class="col-md-6">
+                                <h6 class="text-muted mb-2"><i class="fas fa-cog me-1"></i>推理配置</h6>
+                                <div class="mb-2">
+                                    <label class="form-label small">模型类型</label>
+                                    <select class="form-select form-select-sm" id="infer-model-type">
+                                        <option value="SSLR">SSLR（逻辑回归）</option>
+                                        <option value="SSXGBoost">SSXGBoost（梯度提升树）</option>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">模型版本（可选）</label>
+                                    <select class="form-select form-select-sm" id="infer-model-version">
+                                        <option value="">手动填写模型路径</option>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Company 模型路径</label>
+                                    <input type="text" class="form-control form-control-sm" id="infer-company-model"
+                                        placeholder="/app/company/models/lr_company">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Partner 模型路径</label>
+                                    <input type="text" class="form-control form-control-sm" id="infer-partner-model"
+                                        placeholder="/app/partner/models/lr_partner">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Company 推理数据集</label>
+                                    <div class="input-group input-group-sm">
+                                        <select class="form-select form-select-sm" id="infer-company-data"></select>
+                                        <label class="btn btn-outline-secondary" title="上传新文件">
+                                            <i class="fas fa-upload"></i>
+                                            <input type="file" accept=".csv" style="display:none"
+                                                onchange="uploadDataset(this,'company','infer-company-data')">
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small text-muted">
+                                        <i class="fas fa-info-circle me-1"></i>
+                                        Partner 推理数据集将由后端自动获取
+                                    </label>
+                                    <p class="small text-muted mb-0" style="font-size:0.78em;">
+                                        系统会自动查询 Partner 节点已上传的数据集；若无上传则使用内置默认路径
+                                        <code>/app/partner/guest_test.csv</code>。
+                                    </p>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-success flex-grow-1" id="start-infer-btn" onclick="startInfer()">
+                                        <i class="fas fa-play me-1"></i>开始推理
+                                    </button>
+                                    <button class="btn btn-outline-secondary" id="reset-infer-btn" onclick="resetInfer()">
+                                        <i class="fas fa-redo"></i>
+                                    </button>
+                                </div>
+                                <div class="mt-2" id="infer-progress-msg" style="display:none;">
+                                    <div class="alert alert-info py-2 mb-0 small">
+                                        <i class="fas fa-spinner fa-spin me-1"></i>
+                                        <span id="infer-progress-text">推理中...</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 推理结果 -->
+                            <div class="col-md-6">
+                                <h6 class="text-muted mb-2"><i class="fas fa-table me-1"></i>推理结果</h6>
+                                <div id="infer-result-container" class="border rounded p-2" style="max-height:320px;overflow-y:auto;">
+                                    <div class="text-center text-muted py-3">
+                                        <i class="fas fa-hourglass-start fa-2x mb-2"></i>
+                                        <p class="small">点击"开始推理"后结果将显示在此处</p>
+                                    </div>
+                                </div>
+                                <div class="mt-2 d-flex justify-content-between align-items-center" id="infer-result-footer" style="display:none!important;">
+                                    <small class="text-muted" id="infer-result-count"></small>
+                                    <button class="btn btn-sm btn-outline-success" onclick="downloadInferResult()">
+                                        <i class="fas fa-download me-1"></i>下载 CSV
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <!-- 脚本 -->
@@ -490,6 +658,7 @@
             node_role: "{{ node_role }}",
             is_readonly: {{ "true" if is_readonly else "false" }},
         };
+        let latestModels = [];
 
         let trainingDefaults = {
             model: 'SSLR',
@@ -657,8 +826,17 @@
             }
         }
 
+        function formatDuration(seconds) {
+            const s = Math.max(0, Number(seconds || 0));
+            const h = String(Math.floor(s / 3600)).padStart(2, '0');
+            const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+            const sec = String(Math.floor(s % 60)).padStart(2, '0');
+            return `${h}:${m}:${sec}`;
+        }
+
         // 更新系统状态
         function updateSystemState(data) {
+            const prevTrainingStatus = systemState.training_status;
             Object.assign(systemState, data);
 
             // Company和Partner节点控制已注释，不再更新UI状态
@@ -666,12 +844,18 @@
             // updateNodeStatus('partner', data.partner_status);
 
             // 更新训练状态（只在状态改变时更新，避免闪烁）
-            if (data.training_status && data.training_status !== systemState.training_status) {
+            if (data.training_status && data.training_status !== prevTrainingStatus) {
                 systemState.training_status = data.training_status;
                 const trainingStatusElement = document.getElementById('training-status');
                 if (trainingStatusElement) {
                     trainingStatusElement.textContent = data.training_status;
                     trainingStatusElement.className = 'badge ' + getStatusBadgeClass(data.training_status) + ' me-3';
+                }
+            }
+            if (data.uptime_seconds !== undefined) {
+                const uptimeElement = document.getElementById('uptime');
+                if (uptimeElement) {
+                    uptimeElement.textContent = formatDuration(data.uptime_seconds);
                 }
             }
 
@@ -905,7 +1089,12 @@
                 n_estimators: toInt(document.getElementById('param-n-estimators').value, trainingDefaults.n_estimators),
                 max_depth: toInt(document.getElementById('param-max-depth').value, trainingDefaults.max_depth),
                 K_quantiles: toInt(document.getElementById('param-k-quantiles').value, trainingDefaults.K_quantiles),
-                reg_coef: toFloat(document.getElementById('param-reg-coef').value, trainingDefaults.reg_coef)
+                reg_coef: toFloat(document.getElementById('param-reg-coef').value, trainingDefaults.reg_coef),
+                // 数据集路径
+                company_train_dataset: (document.getElementById('dataset-company-train') || {}).value || null,
+                company_val_dataset: (document.getElementById('dataset-company-val') || {}).value || null,
+                partner_train_dataset: (document.getElementById('dataset-partner-train') || {}).value || null,
+                partner_val_dataset: (document.getElementById('dataset-partner-val') || {}).value || null
             };
 
             console.log('🚀 启动训练，参数:', params);
@@ -1239,12 +1428,92 @@
         // ==================== 模型参数管理 ====================
 
         // 加载模型列表
+        // 数据集选择下拉框选项填充
+        function populateDatasetSelect(selectId, files, defaultFilename) {
+            const sel = document.getElementById(selectId);
+            if (!sel) return;
+            const prev = sel.value;
+            sel.innerHTML = '';
+            files.forEach(f => {
+                const opt = document.createElement('option');
+                opt.value = f.path;
+                opt.textContent = f.name + ' (' + formatFileSize(f.size) + ')';
+                sel.appendChild(opt);
+            });
+            // 恢复上次选择（按路径匹配）
+            if (prev && files.find(f => f.path === prev)) {
+                sel.value = prev;
+                return;
+            }
+            // 按默认文件名（basename）查找
+            if (defaultFilename) {
+                const baseName = defaultFilename.split('/').pop();
+                const def = files.find(f => f.name === baseName);
+                if (def) sel.value = def.path;
+            }
+        }
+
+        // 加载数据集列表（每端只加载自身节点的数据集）
+        function loadDatasets() {
+            fetch('/api/datasets/list')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status !== 'success') return;
+                    const ds = data.datasets;
+                    if (systemState.is_readonly) {
+                        // Partner WebUI：只填充 Partner 数据集下拉框
+                        populateDatasetSelect('dataset-partner-train', ds.partner || [], '/app/partner/guest_train.csv');
+                        populateDatasetSelect('dataset-partner-val', ds.partner || [], '/app/partner/guest_test.csv');
+                    } else {
+                        // Company WebUI：只填充 Company 数据集下拉框
+                        // 推理 Company 数据集也在此填充；Partner 推理路径为文本输入，无需填充
+                        populateDatasetSelect('dataset-company-train', ds.company || [], '/app/company/host_train.csv');
+                        populateDatasetSelect('dataset-company-val', ds.company || [], '/app/company/host_test.csv');
+                        populateDatasetSelect('infer-company-data', ds.company || [], '/app/company/host_test.csv');
+                    }
+                })
+                .catch(err => console.error('加载数据集列表失败:', err));
+        }
+
+        // 上传数据集
+        function uploadDataset(input, nodeType, targetSelectId) {
+            if (!input.files || !input.files[0]) return;
+            const file = input.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('node_type', nodeType);
+
+            addLogEntry({ timestamp: new Date().toLocaleString(), level: 'INFO', message: `正在上传数据集: ${file.name} -> ${nodeType}` });
+
+            fetch('/api/datasets/upload', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        addLogEntry({ timestamp: new Date().toLocaleString(), level: 'INFO', message: `数据集上传成功: ${data.filename}` });
+                        // 刷新下拉框并选中刚上传的文件
+                        loadDatasets();
+                        setTimeout(() => {
+                            const sel = document.getElementById('dataset-' + targetSelectId);
+                            if (sel) sel.value = data.path;
+                        }, 500);
+                    } else {
+                        addLogEntry({ timestamp: new Date().toLocaleString(), level: 'ERROR', message: `数据集上传失败: ${data.message}` });
+                    }
+                })
+                .catch(err => {
+                    addLogEntry({ timestamp: new Date().toLocaleString(), level: 'ERROR', message: `上传请求失败: ${err}` });
+                });
+            input.value = '';
+        }
+
         function loadModels() {
             fetch('/api/models/list')
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        displayModels(data.models);
+                        latestModels = data.models || [];
+                        displayModels(latestModels);
+                        populateInferModelVersionOptions(latestModels);
                     } else {
                         console.error('加载模型失败:', data.message);
                     }
@@ -1257,8 +1526,11 @@
         // 显示模型列表
         function displayModels(models) {
             const container = document.getElementById('models-container');
+            const visibleModels = systemState.is_readonly
+                ? (models || []).filter(m => m.node_type === 'partner')
+                : (models || []);
 
-            if (models.length === 0) {
+            if (visibleModels.length === 0) {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">
                         <i class="fas fa-folder-open fa-3x mb-3"></i>
@@ -1269,20 +1541,36 @@
                 return;
             }
 
+            const sortedModels = [...visibleModels].sort((a, b) => {
+                const ta = a.trained_at || '';
+                const tb = b.trained_at || '';
+                return tb.localeCompare(ta);
+            });
+
             let html = '';
-            models.forEach((model, index) => {
+            sortedModels.forEach((model, index) => {
                 const nodeLabel = model.node_type === 'company' ? 'Company (甲方)' : 'Partner (乙方)';
                 const nodeBadge = model.node_type === 'company' ? 'bg-primary' : 'bg-success';
+                const fileCount = model.files.length;
+                const totalSize = model.files.reduce((sum, f) => sum + f.size, 0);
+                const params = model.training_params || {};
+                const paramsSummary = [
+                    params.model ? `model=${params.model}` : '',
+                    params.n_epochs !== undefined ? `epochs=${params.n_epochs}` : '',
+                    params.batch_size !== undefined ? `batch=${params.batch_size}` : '',
+                    params.lr !== undefined ? `lr=${params.lr}` : ''
+                ].filter(Boolean).join(', ');
 
                 html += `
                     <div class="model-card">
-                        <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
                             <div>
                                 <h6 class="mb-1">
                                     <span class="badge ${nodeBadge} me-2">${nodeLabel}</span>
                                     ${model.model_type}
                                 </h6>
                                 <small class="text-muted">${model.model_name}</small>
+                                ${model.version_id ? `<br><small class="text-muted">版本ID：${model.version_id}</small>` : ''}
                             </div>
                             <div>
                                 ${!systemState.is_readonly ? `
@@ -1292,44 +1580,45 @@
                                 ` : ''}
                             </div>
                         </div>
-                        
-                        ${Object.keys(model.info).length > 0 ? `
-                        <div class="alert alert-info py-2 mb-3">
-                            <small><strong>模型信息:</strong> ${JSON.stringify(model.info, null, 2).replace(/[{}"]/g, '').replace(/,/g, ', ')}</small>
-                        </div>
-                        ` : ''}
-                        
-                        <div class="mb-2">
-                            <strong>模型文件:</strong>
-                        </div>
-                        <div class="border rounded">
-                            ${model.files.map(file => `
-                                <div class="model-file-item">
-                                    <div>
-                                        <i class="fas fa-file me-2"></i>
-                                        <strong>${file.name}</strong>
-                                        <small class="text-muted ms-2">(${formatFileSize(file.size)})</small>
-                                    </div>
-                                    <div>
-                                        ${canViewFile(file.name) ? `
-                                        <button class="btn btn-sm btn-outline-primary me-1" 
-                                                onclick="viewModelFile('${model.node_type}', '${model.model_name}', '${file.name}')">
-                                            <i class="fas fa-eye"></i> 查看
-                                        </button>
-                                        ` : ''}
-                                        <button class="btn btn-sm btn-outline-success" 
-                                                onclick="downloadModelFile('${model.node_type}', '${model.model_name}', '${file.name}')">
-                                            <i class="fas fa-download"></i> 下载
-                                        </button>
-                                    </div>
-                                </div>
-                            `).join('')}
+                        <div class="alert alert-success py-2 mb-0">
+                            <i class="fas fa-check-circle me-1"></i>
+                            <small><strong>模型参数已保存</strong> &nbsp;|&nbsp; 路径：<code>${model.path}</code>
+                            ${fileCount > 0 ? `&nbsp;|&nbsp; 共 ${fileCount} 个文件，合计 ${formatFileSize(totalSize)}` : ''}
+                            ${model.trained_at ? `&nbsp;|&nbsp; 训练完成于 ${new Date(model.trained_at).toLocaleString()}` : ''}
+                            ${paramsSummary ? `&nbsp;|&nbsp; 参数：${paramsSummary}` : ''}</small>
                         </div>
                     </div>
                 `;
             });
 
             container.innerHTML = html;
+        }
+
+        function populateInferModelVersionOptions(models) {
+            const sel = document.getElementById('infer-model-version');
+            if (!sel) return;
+
+            const grouped = {};
+            (models || []).forEach(m => {
+                if (!m.version_id) return;
+                if (!grouped[m.version_id]) grouped[m.version_id] = {};
+                grouped[m.version_id][m.node_type] = m;
+            });
+
+            const versionIds = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+            sel.innerHTML = '<option value="">手动填写模型路径</option>';
+            versionIds.forEach(id => {
+                const g = grouped[id];
+                if (!g.company || !g.partner) return;
+                const modelType = g.company.model_type || g.partner.model_type || 'Unknown';
+                const option = document.createElement('option');
+                option.value = id;
+                option.textContent = `${id} (${modelType})`;
+                option.dataset.companyPath = g.company.path;
+                option.dataset.partnerPath = g.partner.path;
+                option.dataset.modelType = g.company.model_type || g.partner.model_type || '';
+                sel.appendChild(option);
+            });
         }
 
         // 格式化文件大小
@@ -1447,8 +1736,201 @@
             loadModels();
         });
 
-        // 页面加载时加载模型列表
+        // ── 推理相关 ──────────────────────────────────────────────────────────────
+
+        let _inferPollTimer = null;
+
+        function startInfer() {
+            const modelType        = document.getElementById('infer-model-type').value;
+            const companyModelPath = document.getElementById('infer-company-model').value.trim();
+            const partnerModelPath = document.getElementById('infer-partner-model').value.trim();
+            const companyDataPath  = (document.getElementById('infer-company-data') || {}).value || '';
+            // partner_data_path 由后端自动解析（优先从 Partner WebUI 获取已上传数据集）
+
+            if (!companyModelPath || !partnerModelPath) {
+                alert('请填写 Company 和 Partner 的模型路径！');
+                return;
+            }
+
+            document.getElementById('start-infer-btn').disabled = true;
+            document.getElementById('infer-progress-msg').style.display = '';
+            document.getElementById('infer-progress-text').textContent = '推理任务启动中...';
+            document.getElementById('infer-status-badge').textContent = '运行中';
+            document.getElementById('infer-status-badge').className = 'badge bg-warning';
+            document.getElementById('infer-result-container').innerHTML = [
+                '<div class="text-center text-muted py-3">',
+                '<i class="fas fa-spinner fa-spin fa-2x mb-2"></i>',
+                '<p class="small">推理执行中，请稍候…</p>',
+                '</div>'
+            ].join('');
+
+            fetch('/api/infer/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model_type: modelType,
+                    company_model_path: companyModelPath,
+                    partner_model_path: partnerModelPath,
+                    company_data_path: companyDataPath
+                    // partner_data_path 由后端自动解析
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status !== 'success') {
+                    showInferError(data.message || '启动推理失败');
+                    return;
+                }
+                _inferPollTimer = setInterval(pollInferStatus, 2000);
+            })
+            .catch(err => showInferError(String(err)));
+        }
+
+        function pollInferStatus() {
+            fetch('/api/infer/status')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('infer-progress-text').textContent = data.message || '';
+                    if (data.status === 'running') return;
+
+                    clearInterval(_inferPollTimer);
+                    _inferPollTimer = null;
+                    document.getElementById('start-infer-btn').disabled = false;
+                    document.getElementById('infer-progress-msg').style.display = 'none';
+
+                    if (data.status === 'success') {
+                        document.getElementById('infer-status-badge').textContent = '完成';
+                        document.getElementById('infer-status-badge').className = 'badge bg-success';
+                        renderInferResult(data.result || []);
+                    } else {
+                        showInferError(data.message || '推理失败');
+                    }
+                })
+                .catch(err => {
+                    clearInterval(_inferPollTimer);
+                    _inferPollTimer = null;
+                    showInferError(String(err));
+                });
+        }
+
+        function showInferError(msg) {
+            document.getElementById('start-infer-btn').disabled = false;
+            document.getElementById('infer-progress-msg').style.display = 'none';
+            document.getElementById('infer-status-badge').textContent = '错误';
+            document.getElementById('infer-status-badge').className = 'badge bg-danger';
+            document.getElementById('infer-result-container').innerHTML =
+                '<div class="alert alert-danger py-2 mb-0 small">' +
+                '<i class="fas fa-exclamation-circle me-1"></i>' + msg + '</div>';
+        }
+
+        function renderInferResult(results) {
+            const footer = document.getElementById('infer-result-footer');
+            const count  = document.getElementById('infer-result-count');
+            if (!results || results.length === 0) {
+                document.getElementById('infer-result-container').innerHTML =
+                    '<p class="text-muted small text-center py-3">推理完成，无结果数据。</p>';
+                footer.style.display = 'none';
+                return;
+            }
+            let rows = results.map(function(r) {
+                return '<tr><td class="font-monospace small">' + (r.id != null ? r.id : '') +
+                       '</td><td class="text-center">' + (r.prediction != null ? r.prediction : '') + '</td></tr>';
+            }).join('');
+            document.getElementById('infer-result-container').innerHTML =
+                '<table class="table table-sm table-hover mb-0">' +
+                '<thead class="table-light sticky-top"><tr><th>ID</th><th class="text-center">预测结果</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody></table>';
+            count.textContent = '共 ' + results.length + ' 条结果';
+            footer.style.removeProperty('display');
+        }
+
+        function resetInfer() {
+            if (_inferPollTimer) { clearInterval(_inferPollTimer); _inferPollTimer = null; }
+            fetch('/api/infer/reset', { method: 'POST' }).catch(function(){});
+            document.getElementById('infer-status-badge').textContent = '空闲';
+            document.getElementById('infer-status-badge').className = 'badge bg-info';
+            document.getElementById('infer-progress-msg').style.display = 'none';
+            document.getElementById('start-infer-btn').disabled = false;
+            document.getElementById('infer-result-footer').style.display = 'none';
+            document.getElementById('infer-result-container').innerHTML = [
+                '<div class="text-center text-muted py-3">',
+                '<i class="fas fa-hourglass-start fa-2x mb-2"></i>',
+                '<p class="small">点击"开始推理"后结果将显示在此处</p>',
+                '</div>'
+            ].join('');
+        }
+
+        function downloadInferResult() {
+            fetch('/api/infer/status')
+                .then(r => r.json())
+                .then(data => {
+                    const results = data.result || [];
+                    if (!results.length) { alert('暂无推理结果可下载'); return; }
+                    let csv = 'id,prediction\n';
+                    results.forEach(function(r) { csv += (r.id != null ? r.id : '') + ',' + (r.prediction != null ? r.prediction : '') + '\n'; });
+                    const blob = new Blob([csv], { type: 'text/csv' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'infer_result.csv';
+                    a.click();
+                });
+        }
+
+        function autoFillInferModelPaths(modelType) {
+            const suffix = modelType === 'SSLR' ? 'lr' : 'xgb';
+            const compEl = document.getElementById('infer-company-model');
+            const partEl = document.getElementById('infer-partner-model');
+            if (compEl && !compEl.value) compEl.value = '/app/company/models/' + suffix + '_company';
+            if (partEl && !partEl.value) partEl.value = '/app/partner/models/' + suffix + '_partner';
+        }
+
+        function applySelectedInferVersion() {
+            const sel = document.getElementById('infer-model-version');
+            if (!sel) return;
+            const selected = sel.options[sel.selectedIndex];
+            const compEl = document.getElementById('infer-company-model');
+            const partEl = document.getElementById('infer-partner-model');
+            const modelTypeEl = document.getElementById('infer-model-type');
+            if (!selected || !selected.value) return;
+
+            if (compEl && selected.dataset.companyPath) compEl.value = selected.dataset.companyPath;
+            if (partEl && selected.dataset.partnerPath) partEl.value = selected.dataset.partnerPath;
+            if (modelTypeEl && selected.dataset.modelType) {
+                if (selected.dataset.modelType.includes('XGBoost')) {
+                    modelTypeEl.value = 'SSXGBoost';
+                } else {
+                    modelTypeEl.value = 'SSLR';
+                }
+            }
+        }
+
+        var _inferModelTypeEl = document.getElementById('infer-model-type');
+        if (_inferModelTypeEl) {
+            _inferModelTypeEl.addEventListener('change', function () {
+                const versionSelect = document.getElementById('infer-model-version');
+                if (versionSelect && versionSelect.value) {
+                    applySelectedInferVersion();
+                } else {
+                    // 手动模式时按类型填默认路径
+                    document.getElementById('infer-company-model').value = '';
+                    document.getElementById('infer-partner-model').value = '';
+                    autoFillInferModelPaths(this.value);
+                }
+            });
+            autoFillInferModelPaths(_inferModelTypeEl.value);
+        }
+
+        const inferVersionEl = document.getElementById('infer-model-version');
+        if (inferVersionEl) {
+            inferVersionEl.addEventListener('change', function () {
+                if (!this.value) return;
+                applySelectedInferVersion();
+            });
+        }
+
+        // 页面加载时加载模型列表和数据集列表
         loadModels();
+        loadDatasets();
 
         // 每30秒自动刷新模型列表
         setInterval(loadModels, 30000);

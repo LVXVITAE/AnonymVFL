@@ -14,7 +14,7 @@ partner:
   
   image:
     repository: "mobile-mpc-partner"
-    tag: "v1.0.16"
+    tag: "v1.0.19"
     pullPolicy: "Never"  # 使用本地镜像
   
   replicas: 1
@@ -65,7 +65,7 @@ webui:
   
   image:
     repository: "mobile-mpc-partner"  # 使用 partner 镜像（包含只读 Web UI）
-    tag: "v1.0.16"
+    tag: "v1.0.19"
     pullPolicy: "Never"
   
   replicas: 1
@@ -88,6 +88,10 @@ webui:
   env:
     - name: NODE_ROLE
       value: "partner"
+    # Company WebUI 的访问地址，用于 Partner 只读节点代理训练状态
+    # 格式：http://<集群A节点IP>:<WebUI NodePort>
+    - name: COMPANY_WEBUI_URL
+      value: "http://192.168.49.2:30080"
 
 # 持久化存储配置
 persistence:

@@ -313,14 +313,16 @@ def main(args: argparse.Namespace):
         if args.model == "SSXGBoost":
             y_train = share2spu(y_train_company, y_train_partner)
         else:
-            y_train = train_label_keeper(lambda x, y: x + y)(y_train_company.to(
-                train_label_keeper), y_train_partner.to(train_label_keeper))
+            # share_y=True 时，SSLR 使用 SPU 上的标签并启用近似 sigmoid。
+            y_train = share2spu(y_train_company, y_train_partner)
     else:
         if args.model == "SSXGBoost":
             y_train = train_label_keeper(lambda x, y: x + y)(y_train_company.to(
                 train_label_keeper), y_train_partner.to(train_label_keeper))
         else:
-            y_train = share2spu(y_train_company, y_train_partner)
+            # share_y=False 时，SSLR 标签应保留在主动方 PYU，避免 approx=False 的断言失败。
+            y_train = train_label_keeper(lambda x, y: x + y)(y_train_company.to(
+                train_label_keeper), y_train_partner.to(train_label_keeper))
 
     def read_val_dataset(path):
         data = pd.read_csv(path)

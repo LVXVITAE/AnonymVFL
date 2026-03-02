@@ -1,3 +1,6 @@
+from secretflow.device import PYUObject, SPUObject
+from secretflow.data import FedNdarray
+from secretflow import SPU, PYU
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -5,9 +8,6 @@ import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
 import secretflow as sf
-from secretflow.device import PYUObject, SPUObject
-from secretflow.data import FedNdarray
-from secretflow import SPU, PYU
 out_dom = int(2**16)
 
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -213,6 +213,7 @@ def compute_for_metric(y_true: np.ndarray, y_pred: np.ndarray):
     y_pred = y_pred.reshape(-1, 1)
     positive_mask = (y_true == 0)
     negative_mask = (y_true == 1)
+    # pred_positive = (y_pred == 0)
     pred_negative = (y_pred == 1)
     fn = np.sum(positive_mask & pred_negative)
     tn = np.sum(negative_mask & pred_negative)
@@ -226,8 +227,8 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
     实现了训练测试集划分以及标签（y）01/独热编码
     """
     if dataset == "pima" or dataset == "lbw" or dataset == "pcs" or dataset == "uis":
-        data = pd.read_csv(os.path.join(
-            "Datasets", f"{dataset}.csv")).to_numpy()
+        data = pd.read_csv(os.path.join(os.path.dirname(__file__),
+                                        "Datasets", f"{dataset}.csv")).to_numpy()
         train_data, test_data = train_test_split(data, shuffle=False)
         train_X = train_data[:, :-1]
         train_y = train_data[:, -1].reshape(-1, 1)
@@ -235,7 +236,7 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         test_y = test_data[:, -1].reshape(-1, 1)
 
     elif dataset == "gisette" or dataset == "arcene":
-        folder = os.path.join("Datasets", dataset)
+        folder = os.path.join(os.path.dirname(__file__), "Datasets", dataset)
         train_X = np.loadtxt(os.path.join(folder, f"{dataset}_train.data"))
         train_y = np.loadtxt(os.path.join(folder, f"{dataset}_train.labels"))
         train_y[train_y == -1] = 0
@@ -258,7 +259,8 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         test_y = test_y.astype(int).reshape(-1, 1)
 
     elif dataset == "risk":
-        dir_path = os.path.join("Datasets", "data", "data")
+        dir_path = os.path.join(os.path.dirname(
+            __file__), "Datasets", "data", "data")
         train = pd.read_csv(os.path.join(dir_path, "risk_assessment_all.csv"))
         test = pd.read_csv(os.path.join(
             dir_path, "risk_assessment_all_test.csv"))
@@ -268,7 +270,8 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         test_y = test["y"].to_numpy().reshape(-1, 1)
 
     elif dataset == "breast":
-        dir_path = os.path.join("Datasets", "data", "data")
+        dir_path = os.path.join(os.path.dirname(
+            __file__), "Datasets", "data", "data")
         guest = pd.read_csv(os.path.join(dir_path, "breast_hetero_guest.csv"))
         host = pd.read_csv(os.path.join(dir_path, "breast_hetero_host.csv"))
         all = pd.concat([host, guest], join='inner', axis=1)
@@ -277,7 +280,8 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
 
     elif dataset == "shop":
-        dir_path = os.path.join("Datasets", "data", "data")
+        dir_path = os.path.join(os.path.dirname(
+            __file__), "Datasets", "data", "data")
         guest = pd.read_csv(os.path.join(dir_path, "guest_train.csv"))
         host = pd.read_csv(os.path.join(dir_path, "host_train.csv"))
         all = pd.concat([host, guest], join='inner', axis=1)
@@ -355,7 +359,7 @@ class MPCInitializer:
 class SSML:
     def __init__(self, devices: dict):
         """
-        初始化秘密共享机器学习模型基类
+        初始化秘密共享机器学习模型
         ## Args:
          - devices : 每个字段的值应为SPU或PYU。例如：
 
@@ -366,17 +370,15 @@ class SSML:
            }
         """
         assert 'company' in devices and 'partner' in devices and isinstance(
-            devices['company'], PYU) and isinstance(devices['partner'], PYU), \
-            "devices must contain 'company' and 'partner' as PYU devices"
+            devices['company'], PYU) and isinstance(devices['partner'], PYU), "devices must contain 'company' and 'partner' as PYU devices"
         self.company = devices['company']
         self.partner = devices['partner']
-        self.devices = devices
         if 'spu' in devices and isinstance(devices['spu'], SPU):
             self.spu = devices['spu']
         else:
             self.spu = None
 
-    def fit(self, X: SPUObject, y, X_test: FedNdarray = None, y_test: PYUObject = None):
+    def fit(self, X: SPUObject, y: SPUObject | PYUObject, X_test: FedNdarray | None = None, y_test: PYUObject | None = None):
         raise NotImplementedError("Subclasses should implement this method.")
 
     def predict(self, X: FedNdarray, device: PYU) -> PYUObject:

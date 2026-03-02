@@ -57,8 +57,8 @@ spec:
             ray stop --force || true
             sleep 2
             
-            # 获取 Host IP (使用 hostNetwork 后，Pod IP 就是 Host IP)
-            export HOST_IP=$(hostname -i | awk '{print $1}')
+            # 使用 K8s Downward API 注入的 POD_IP（稳定单一 IP，避免 hostname -i 多网卡问题）
+            export HOST_IP=${POD_IP}
             echo "📍 Host IP: $HOST_IP"
             echo "🌐 使用 hostNetwork 模式，直接监听节点 IP"
             
@@ -138,6 +138,8 @@ spec:
           mountPath: /app/data
         - name: models
           mountPath: /app/company/models
+        - name: datasets
+          mountPath: /app/company/Datasets/uploads
         - name: logs
           mountPath: /app/logs
         - name: dshm
@@ -148,6 +150,8 @@ spec:
         {{- end }}
       volumes:
       {{- include "mobile-mpc.volumes" .Values.company | nindent 6 }}
+      - name: datasets
+        emptyDir: {}
       - name: dshm
         emptyDir:
           medium: Memory
