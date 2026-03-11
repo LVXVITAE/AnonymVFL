@@ -1,3 +1,4 @@
+# 导入数值计算和数据处理相关库
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -5,74 +6,69 @@ import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
 import secretflow as sf
+
+# 定义秘密共享的输出域范围，用于加法秘密共享的随机数生成
 out_dom = int(2**16)
 
+# 获取项目根目录路径
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-class VarOwner:
-    def __init__(self):
-        pass
-
-    def reconstruct(self, x0, x1):
-        assert x0.owner == self and x1.owner == self
-        return (x0 + x1).value
-
-
-class VarCompany(VarOwner):
-    pass
-
-
-class VarPartner(VarOwner):
-    pass
-
 
 def SS_share(x: jnp.ndarray | int | float) -> tuple[jnp.ndarray | int | float, jnp.ndarray | int | float]:
     '''split x into two additive shares'''
+    # 如果输入是标量，先转换为JAX数组
     if isinstance(x, (int, float)):
         x = jnp.array(x)
 
+    # 生成第一个随机分片，范围在[-out_dom/2, out_dom/2]之间
     x_1 = jax.random.randint(jax.random.PRNGKey(
         0), x.shape, -out_dom // 2, out_dom // 2)
+    # 第二个分片 = 原值 - 第一个分片，保证两个分片之和等于原值
     x_2 = x - x_1
     return x_1, x_2
 
 
 def approx_sigmoid(x: jnp.ndarray):
     """
-    Compute approximated sigmoid using piecewise function
+    使用分段线性函数近似计算sigmoid函数
+    这种近似在安全计算中更高效，因为它避免了指数运算
     """
-
+    # 将(x + 0.5)截断到[0, 1]区间，实现分段线性近似
     return jnp.clip(x + 1/2, 0, 1)
 
 
 def sigmoid(x: jnp.ndarray) -> jnp.ndarray:
     """
-    Computes the sigmoid function.
+    计算标准sigmoid激活函数
+    公式: 1 / (1 + exp(-x))
     """
     return 1.0 / (1.0 + jnp.exp(-x))
 
 
 def softmax(x: jnp.ndarray) -> jnp.ndarray:
     """
-    Computes the softmax function.
+    计算softmax函数，用于多分类问题的输出层
+    通过减去最大值来提高数值稳定性
     """
+    # 减去最大值防止指数溢出
     e_x = jnp.exp(x - jnp.max(x, axis=-1, keepdims=True))
     return e_x / jnp.sum(e_x, axis=-1, keepdims=True)
 
 
 def cross_entropy(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
     """
-    Computes the cross-entropy loss.
+    计算交叉熵损失函数
+    添加小常数1e-12防止log(0)的情况
     """
     return -jnp.sum(y_true * jnp.log(y_pred + 1e-12))
 
 
 class ApproxSigmoidCrossEntropy:
+    """使用近似sigmoid的交叉熵损失函数类，适用于安全多方计算场景"""
+    
     @staticmethod
     def loss(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the sigmoid cross-entropy loss.
+        计算使用近似sigmoid的交叉熵损失值
         """
         y_pred = approx_sigmoid(z)
         return cross_entropy(y_true, y_pred)
@@ -80,7 +76,8 @@ class ApproxSigmoidCrossEntropy:
     @staticmethod
     def grad(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the gradient of the sigmoid cross-entropy loss.
+        计算损失函数关于z的梯度（一阶导数）
+        梯度简化为: y_pred - y_true
         """
         y_pred = approx_sigmoid(z)
         return y_pred - y_true
@@ -88,17 +85,20 @@ class ApproxSigmoidCrossEntropy:
     @staticmethod
     def hess(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the hessian of the sigmoid cross-entropy loss.
+        计算损失函数关于z的二阶导数（Hessian）
+        用于XGBoost等需要二阶梯度的算法
         """
         y_pred = approx_sigmoid(z)
         return y_pred * (1.0 - y_pred)
 
 
 class SigmoidCrossEntropy:
+    """使用标准sigmoid的交叉熵损失函数类"""
+    
     @staticmethod
     def loss(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the sigmoid cross-entropy loss.
+        计算使用标准sigmoid的交叉熵损失值
         """
         y_pred = sigmoid(z)
         return cross_entropy(y_true, y_pred)
@@ -106,7 +106,7 @@ class SigmoidCrossEntropy:
     @staticmethod
     def grad(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the gradient of the sigmoid cross-entropy loss.
+        计算损失函数关于z的梯度（一阶导数）
         """
         y_pred = sigmoid(z)
         return y_pred - y_true
@@ -114,17 +114,19 @@ class SigmoidCrossEntropy:
     @staticmethod
     def hess(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the hessian of the sigmoid cross-entropy loss.
+        计算损失函数关于z的二阶导数（Hessian）
         """
         y_pred = sigmoid(z)
         return y_pred * (1.0 - y_pred)
 
 
 class SoftmaxCrossEntropy:
+    """Softmax交叉熵损失函数类，用于多分类问题"""
+    
     @staticmethod
     def loss(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the softmax cross-entropy loss.
+        计算softmax交叉熵损失值
         """
         y_pred = softmax(z)
         return cross_entropy(y_true, y_pred)
@@ -132,7 +134,7 @@ class SoftmaxCrossEntropy:
     @staticmethod
     def grad(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the gradient of the softmax cross-entropy loss.
+        计算损失函数关于z的梯度
         """
         y_pred = softmax(z)
         return y_pred - y_true
@@ -140,7 +142,7 @@ class SoftmaxCrossEntropy:
     @staticmethod
     def hess(y_true: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the hessian of the softmax cross-entropy loss.
+        计算损失函数关于z的二阶导数（近似值）
         """
         y_pred = softmax(z)
         return y_pred * (1.0 - y_pred)
@@ -148,70 +150,87 @@ class SoftmaxCrossEntropy:
 
 def mean_square_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
     """
-    Computes the mean square error loss.
+    计算均方误差损失函数，用于回归问题
     """
     return jnp.mean((y_true - y_pred) ** 2)
 
 
 class MeanSquare:
+    """均方误差损失函数类，用于回归问题"""
+    
     @staticmethod
     def loss(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the mean square loss.
+        计算均方误差损失值
         """
         return mean_square_error(y_true, y_pred)
 
     @staticmethod
     def grad(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the gradient of the mean square loss.
+        计算均方误差关于预测值的梯度
         """
         return 2 * (y_pred - y_true) / y_true.shape[0]
 
     @staticmethod
     def hess(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> jnp.ndarray:
         """
-        Computes the hessian of the mean square loss.
+        计算均方误差关于预测值的二阶导数
         """
         return 2 / y_true.shape[0]
 
 
 def to_int_labels(logits: np.ndarray):
-    # 将logit转化为整数标签
+    """将模型输出的logits转换为整数标签"""
+    # 二分类情况：四舍五入
     if logits.shape[1] == 1:
         return np.round(logits)
     else:
+        # 多分类情况：取最大值索引
         return np.argmax(logits, axis=1)
 
 
 def compute_accuracy(y_true: np.ndarray, y_pred: np.ndarray):
+    """计算分类准确率"""
+    # 将标签展平为一维列向量
     y_true = y_true.reshape(-1, 1)
     y_pred = y_pred.reshape(-1, 1)
     return np.mean(y_true == y_pred)
 
 def compute_f1_metric(y_true : np.ndarray, y_pred : np.ndarray):
+    """计算F1分数，精确率和召回率的调和平均数"""
+    # 将标签展平为一维列向量
     y_true = y_true.reshape(-1, 1)
     y_pred = y_pred.reshape(-1, 1)
+    # 定义正负样本掩码（注意：0表示正类，1表示负类）
     positive_mask = (y_true == 0)
     negative_mask = (y_true == 1)
     pred_positive = (y_pred == 0)
     pred_negative = (y_pred == 1)
+    # 计算真正例(TP)、假正例(FP)、假负例(FN)
     tp = np.sum(positive_mask & pred_positive)
     fp = np.sum(negative_mask & pred_positive)
     fn = np.sum(positive_mask & pred_negative)
+    # 计算精确率和召回率
     precision = tp / (tp + fp + 1e-8)
     recall = tp / (tp + fn + 1e-8)
+    # 返回F1分数
     return 2 * (precision * recall) / (precision + recall + 1e-8)
 
 def compute_for_metric(y_true : np.ndarray, y_pred : np.ndarray):
+    """计算误漏率(False Omission Rate)，即预测为负例中实际为正例的比例"""
+    # 将标签展平为一维列向量
     y_true = y_true.reshape(-1, 1)
     y_pred = y_pred.reshape(-1, 1)
+    # 定义正负样本掩码
     positive_mask = (y_true == 0)
     negative_mask = (y_true == 1)
     # pred_positive = (y_pred == 0)
     pred_negative = (y_pred == 1)
+    # 计算假负例(FN)和真负例(TN)
     fn = np.sum(positive_mask & pred_negative)
     tn = np.sum(negative_mask & pred_negative)
+    # 返回误漏率
     return fn / (fn + tn + 1e-8)
 
 # 加载数据集，开发测试用
@@ -347,11 +366,14 @@ class MPCInitializer:
         self.partner_heu = sf.HEU(
             heu_config, self.spu.cluster_def['runtime_config']['field'])
 
+# 导入SecretFlow设备对象类型
 from secretflow.device import PYUObject, SPUObject
 from secretflow import SPU, PYU
 from secretflow.data import FedNdarray
 
 class SSML:
+    """秘密共享机器学习模型的基类，提供训练、预测、评估和保存/加载模型的接口"""
+    
     def __init__(self, devices: dict):
         """
         初始化秘密共享机器学习模型
@@ -364,38 +386,52 @@ class SSML:
             'partner': partner,
            }
         """
+        # 验证devices必须包含company和partner两个PYU设备
         assert 'company' in devices and 'partner' in devices and isinstance(
             devices['company'], PYU) and isinstance(devices['partner'], PYU), "devices must contain 'company' and 'partner' as PYU devices"
         self.company = devices['company']
         self.partner = devices['partner']
+        # SPU设备是可选的
         if 'spu' in devices and isinstance(devices['spu'], SPU):
             self.spu = devices['spu']
         else:
             self.spu = None
     
     def fit(self, X : SPUObject, y : SPUObject | PYUObject, X_test : FedNdarray | None = None, y_test : PYUObject | None = None):
+        """训练模型，子类必须实现此方法"""
         raise NotImplementedError("Subclasses should implement this method.")
 
     def predict(self, X : FedNdarray, device : PYU)  -> PYUObject:
+        """使用训练好的模型进行预测，子类必须实现此方法"""
         raise NotImplementedError("Subclasses should implement this method.")
 
     @staticmethod
     def score(y_true: PYUObject, y_pred: PYUObject) -> dict:
+        """
+        计算模型评估指标
+        返回包含准确率、F1分数和误漏率的字典
+        """
+        # 确保真实标签和预测标签在同一设备上
         assert  y_true.device == y_pred.device, "y_true and y_pred must be on the same device"
         val_device = y_true.device
+        # 在验证设备上计算各项指标
         acc_score = val_device(compute_accuracy)(y_true, y_pred)
         f1_score = val_device(compute_f1_metric)(y_true, y_pred)
         for_score = val_device(compute_for_metric)(y_true, y_pred)
+        # 揭示结果并返回
         return {
             'accuracy': sf.reveal(acc_score),
             'f1_metric': sf.reveal(f1_score),
             'for_metric': sf.reveal(for_score)
         }
+    
     def save(self, paths: dict, ext: str = 'npy'):
+        """保存模型到指定路径，子类必须实现此方法"""
         raise NotImplementedError("Subclasses should implement this method.")
     
     @classmethod
     def load(cls, devices: dict, paths: dict):
+        """从指定路径加载模型，子类必须实现此方法"""
         raise NotImplementedError("Subclasses should implement this method.")
     
   
