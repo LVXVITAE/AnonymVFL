@@ -53,7 +53,7 @@ class Leaf:
 
 
 class Tree(SSML):
-    def __init__(self, devices: dict, lambda_: float = 1e-5, max_depth: int = 3, div: bool = False, mission='Classification'):
+    def __init__(self, devices: dict, lambda_: float = 1e-5, gamma: float = 0.5, max_depth: int = 3, div: bool = False, mission='Classification'):
         """
         初始化决策树
         ## Args:
@@ -71,6 +71,7 @@ class Tree(SSML):
         """
         self.max_depth: int = max_depth
         self.lambda_: float = lambda_
+        self.gamma: float = gamma
         self.div: bool = div
         # 叶子权重列表，存储每个叶子节点的权重
         self.leaf_weights = []
@@ -331,7 +332,7 @@ class Tree(SSML):
         indices = [(j, k) for j in range(len(G_L)) for k in range(len(G_L[j]))]
         print("Selecting best split ...")
 
-        def gain(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, lambda_: float) -> jnp.ndarray:
+        def gain(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> jnp.ndarray:
             """
             计算增益
             ## Args:
@@ -342,9 +343,9 @@ class Tree(SSML):
             - loss_n: 当前节点的目标损失的分子
             - loss_d: 当前节点的目标损失的分母
             """
-            return (1/2) * ((g_L / h_L) + (g_R / h_R) - (loss_n / loss_d)) - lambda_
+            return (1/2) * ((g_L / h_L) + (g_R / h_R) - (loss_n / loss_d)) - gamma
         if self.div:  # 使用除法直接计算所有节点的增益（尚未测试）
-            def argmax_gain(G_L: jnp.ndarray, G_R: jnp.ndarray, H_L: jnp.ndarray, H_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, lambda_: float) -> tuple[int, bool]:
+            def argmax_gain(G_L: jnp.ndarray, G_R: jnp.ndarray, H_L: jnp.ndarray, H_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> tuple[int, bool]:
                 """
                 计算增益最大值
                 """
@@ -353,14 +354,14 @@ class Tree(SSML):
                 H_L = jnp.array(H_L)
                 H_R = jnp.array(H_R)
                 # 计算所有分裂点的增益
-                gain_ = gain(G_L, G_R, H_L, H_R, loss_n, loss_d, lambda_)
+                gain_ = gain(G_L, G_R, H_L, H_R, loss_n, loss_d, gamma)
                 # 找到增益最大的索引
                 i = jnp.argmax(gain_)
                 # 返回索引和增益是否为正
                 return i, gain_.flatten()[i] > 0
             # 在SPU上计算最优分裂点
             i, sign = self.spu(argmax_gain, num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER,
-                               user_specified_num_returns=2)(G_L, G_R, H_L, H_R, loss_n, loss_d, self.lambda_)
+                               user_specified_num_returns=2)(G_L, G_R, H_L, H_R, loss_n, loss_d, self.gamma)
             # 揭示索引和增益符号
             i = sf.reveal(i)
             sign = sf.reveal(sign).item()
@@ -467,21 +468,21 @@ class Tree(SSML):
             h_L_opt = H_L[j_opt][k_opt]
             h_R_opt = H_R[j_opt][k_opt]
 
-            def max_gain_sign(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, lambda_: float) -> jnp.ndarray:
+            def max_gain_sign(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> jnp.ndarray:
                 """ 计算增益最大分裂点的正负"""
                 # 计算中间变量
                 h_LR = h_L * h_R
                 denom = 2 * h_LR * loss_d
                 # 计算增益分子的等价形式
-                nom = (g_L * h_R + h_L * g_R - 2 * lambda_ * h_LR) * \
+                nom = (g_L * h_R + h_L * g_R - 2 * gamma * h_LR) * \
                     loss_d - h_LR * loss_n
                 # 返回增益是否为正
                 return ~ (nom > 0) ^ (denom > 0)
-            # max_gain = self.spu(gain)(g_L_opt, g_R_opt, h_L_opt, h_R_opt, loss_n, loss_d, self.lambda_)
+            # max_gain = self.spu(gain)(g_L_opt, g_R_opt, h_L_opt, h_R_opt, loss_n, loss_d, self.gamma)
             # max_gain = sf.reveal(max_gain)
             # 在SPU上计算增益符号
             sign = self.spu(max_gain_sign)(g_L_opt, g_R_opt,
-                                           h_L_opt, h_R_opt, loss_n, loss_d, self.lambda_)
+                                           h_L_opt, h_R_opt, loss_n, loss_d, self.gamma)
             # 揭示增益符号
             sign = sf.reveal(sign).item()
             return j_opt, k_opt, sign
@@ -603,7 +604,7 @@ class Tree(SSML):
 
 
 class SSXGBoost(SSML):
-    def __init__(self, devices: dict, n_estimators=3, lambda_=1e-5, max_depth=3, div=False, mission='Classification'):
+    def __init__(self, devices: dict, n_estimators=3, lambda_=1e-5, gamma = 0.5, max_depth=3, div=False, mission='Classification'):
         """
         初始化SSXGBoost模型
         ## Args:
@@ -616,12 +617,14 @@ class SSXGBoost(SSML):
            }
         - n_estimators: 树的数量，默认为5
         - lambda_: l2正则化参数，默认为1e-5
+        - gamma：叶节点数量惩罚系数，默认0.5
         - max_depth: 树的最大深度，默认为3
         - div: 是否使用除法。如果为True，则使用除法计算叶子权重和信息增益；如果为False，则使用优化算法计算叶子权重和增益最大分裂点。
         """
         self.trees: list[Tree] = []
         self.n_estimators = n_estimators
         self.lambda_ = lambda_
+        self.gamma = gamma
         self.max_depth = max_depth
         self.div = div
         self.devices = devices
@@ -729,7 +732,7 @@ class SSXGBoost(SSML):
         # 迭代训练每棵树
         for i in range(self.n_estimators):
             # 训练
-            tree = Tree(self.devices, self.lambda_,
+            tree = Tree(self.devices, self.lambda_, self.gamma,
                         self.max_depth, self.div, self.mission)
             tree.fit(X, y, y_pred, buckets, self.FedQuantiles)
 
