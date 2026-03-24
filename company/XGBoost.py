@@ -850,6 +850,7 @@ class SSXGBoost(SSML):
             'max_depth': self.max_depth,
             'div': self.div,
             'lambda_': self.lambda_,
+            'gamma': self.gamma,
             'save_as': ext
         }
 
@@ -945,6 +946,7 @@ class SSXGBoost(SSML):
         model = cls(devices,
                     n_estimators=info['n_estimators'],
                     lambda_=info['lambda_'],
+                    gamma=info['gamma'],
                     max_depth=info['max_depth'],
                     div=info['div'],
                     mission=info['mission']
@@ -988,8 +990,8 @@ class SSXGBoost(SSML):
         # 重建每棵树
         for i in range(model.n_estimators):
             # 加载树实例
-            t = Tree(model.devices, model.lambda_,
-                     model.max_depth, model.div, model.mission)
+            t = Tree(model.devices, lambda_=model.lambda_, gamma=model.gamma,
+                     max_depth=model.max_depth, div=model.div, mission=model.mission)
             t.root = trees[i]
             # 恢复树的相关信息
             t.FedQuantiles = model.FedQuantiles
