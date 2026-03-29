@@ -14,6 +14,7 @@ import threading
 import time
 import re
 import traceback
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
@@ -36,6 +37,9 @@ except ImportError:
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# 记录应用启动时间（用于区分预置模型和本次训练产出的模型）
+APP_START_TIME = time.time()
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'federated_learning_secret_key_2024'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -44,6 +48,15 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 NODE_ROLE = os.getenv("NODE_ROLE", "company").lower()  # "company" 或 "partner"
 IS_READONLY = NODE_ROLE == "partner"  # Partner 节点为只读模式
 print(f"🔧 节点角色: {NODE_ROLE.upper()}, 只读模式: {IS_READONLY}")
+
+# Partner 专用：Company WebUI 的 URL，用于代理训练状态查询
+# 示例值（在 values-cluster-b.yaml 的 webui.env 中配置）：http://192.168.49.2:30080
+COMPANY_WEBUI_URL = os.getenv("COMPANY_WEBUI_URL", "").rstrip("/")
+
+# Company 专用：Partner WebUI 的 URL，用于训练/推理时自动获取 Partner 已上传的数据集路径
+# 示例值（在 values-cluster-a.yaml 的 webui.env 中配置）：http://192.168.58.2:30081
+PARTNER_WEBUI_URL = os.getenv("PARTNER_WEBUI_URL", "").rstrip("/")
+
 
 # 只读模式装饰器
 
@@ -71,13 +84,22 @@ class SystemState:
         self.company_status = "未启动"
         self.partner_status = "未启动"
         self.training_status = "未开始"
+        self.training_run_id = None
+        self.training_started_at = None
+        self.training_finished_at = None
         self.current_step = 0
+        self.current_epoch = 0
+        self.total_epochs = 0
         self.total_steps = 0
         self.accuracy = 0.0
         self.loss = 0.0
         self.processes = {}
         self.logs = []
         self.config = self.load_config()
+        # 训练完成后写入的模型注册表（不依赖共享文件系统）
+        self.trained_model_registry: list = []
+        # 本次训练正在进行中的待确认模型信息
+        self.pending_training_model: dict = {}
 
     def load_config(self):
         """加载配置文件"""
@@ -126,6 +148,29 @@ class SystemState:
 
 # 全局状态实例
 state = SystemState()
+SERVER_STARTED_AT = datetime.now().isoformat()
+
+
+def _new_training_run_id() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+
+
+def _build_model_dirs(model: str, run_id: str):
+    if model == "SSXGBoost":
+        base = "xgb"
+        model_type = "SSXGBoost"
+    else:
+        base = "lr"
+        model_type = "SSLR (逻辑回归)"
+    company_model_name = f"{base}_company_{run_id}"
+    partner_model_name = f"{base}_partner_{run_id}"
+    return {
+        "model_type": model_type,
+        "company_model_name": company_model_name,
+        "partner_model_name": partner_model_name,
+        "company_path": f"/app/company/models/{company_model_name}",
+        "partner_path": f"/app/partner/models/{partner_model_name}",
+    }
 
 
 def log_message(message: str, level: str = "INFO"):
@@ -230,16 +275,72 @@ def get_status():
             # 如果 Kubernetes API 检查失败，使用内存中的状态
             pass
 
+    # Partner 只读节点：从 Company WebUI 代理训练相关状态，避免两端状态漂移
+    proxied_training_status = state.training_status
+    proxied_current_step = state.current_step
+    proxied_current_epoch = state.current_epoch
+    proxied_total_epochs = state.total_epochs
+    proxied_accuracy = state.accuracy
+    proxied_loss = state.loss
+    proxied_started_at = state.training_started_at
+    proxied_finished_at = state.training_finished_at
+    proxied_run_id = state.training_run_id
+    if IS_READONLY and COMPANY_WEBUI_URL:
+        try:
+            import urllib.request as _urllib_req
+            with _urllib_req.urlopen(
+                f"{COMPANY_WEBUI_URL}/api/status", timeout=2
+            ) as resp:
+                company_data = json.loads(resp.read().decode())
+                proxied_training_status = company_data.get(
+                    "training_status", state.training_status
+                )
+                proxied_current_step = company_data.get(
+                    "current_step", state.current_step
+                )
+                proxied_current_epoch = company_data.get(
+                    "current_epoch", state.current_epoch
+                )
+                proxied_total_epochs = company_data.get(
+                    "total_epochs", state.total_epochs
+                )
+                proxied_accuracy = company_data.get("accuracy", state.accuracy)
+                proxied_loss = company_data.get("loss", state.loss)
+                proxied_started_at = company_data.get(
+                    "training_started_at", state.training_started_at
+                )
+                proxied_finished_at = company_data.get(
+                    "training_finished_at", state.training_finished_at
+                )
+                proxied_run_id = company_data.get(
+                    "training_run_id", state.training_run_id
+                )
+        except Exception:
+            pass  # 网络不可达时使用本地状态
+
+    # 运行时间基于服务启动时间计算（前端按该值动态刷新）
+    try:
+        uptime_seconds = int((datetime.now() - datetime.fromisoformat(SERVER_STARTED_AT)).total_seconds())
+    except Exception:
+        uptime_seconds = 0
+
     return jsonify({
         "company_status": state.company_status,
         "partner_status": state.partner_status,
-        "training_status": state.training_status,
-        "current_step": state.current_step,
+        "training_status": proxied_training_status,
+        "training_run_id": proxied_run_id,
+        "training_started_at": proxied_started_at,
+        "training_finished_at": proxied_finished_at,
+        "current_step": proxied_current_step,
+        "current_epoch": proxied_current_epoch,
+        "total_epochs": proxied_total_epochs,
         "total_steps": state.total_steps,
-        "accuracy": state.accuracy,
-        "loss": state.loss,
+        "accuracy": proxied_accuracy,
+        "loss": proxied_loss,
         "system_info": get_system_info(),
         "logs": state.logs[-50:],  # 最近50条日志
+        "server_started_at": SERVER_STARTED_AT,
+        "uptime_seconds": uptime_seconds,
         "node_role": NODE_ROLE,
         "is_readonly": IS_READONLY
     })
@@ -356,11 +457,36 @@ def _get_logs_from_filesystem(node_type):
 @app.route('/api/training_metrics')
 def get_training_metrics():
     """从日志解析并返回训练指标（优先使用 Kubernetes Pod 日志，否则使用文件系统）"""
+    # Partner 只读节点：直接代理 Company WebUI 的训练指标
+    if IS_READONLY and COMPANY_WEBUI_URL:
+        try:
+            import urllib.request as _urllib_req
+            with _urllib_req.urlopen(
+                f"{COMPANY_WEBUI_URL}/api/training_metrics", timeout=3
+            ) as resp:
+                data = json.loads(resp.read().decode())
+                # 同步本地 training_status，供其他逻辑使用
+                if 'status' in data:
+                    state.training_status = data['status']
+                if 'current_step' in data:
+                    state.current_step = data['current_step']
+                if 'current_epoch' in data:
+                    state.current_epoch = data['current_epoch']
+                if 'started_at' in data:
+                    state.training_started_at = data['started_at']
+                if 'finished_at' in data:
+                    state.training_finished_at = data['finished_at']
+                if 'run_id' in data:
+                    state.training_run_id = data['run_id']
+                return jsonify(data)
+        except Exception:
+            pass  # 网络不可达时降级到本地指标
+
     try:
         # 初始化指标
         metrics = {
             'current_epoch': 0,
-            'total_epochs': 10,
+            'total_epochs': state.total_epochs or 10,
             'current_step': 0,
             'accuracy': 0,
             'f1': 0,
@@ -422,11 +548,40 @@ def get_training_metrics():
             else:
                 return jsonify(metrics)
 
+        # 仅解析当前训练 run 的日志，避免二次训练被旧日志污染
+        run_marker = None
+        run_id = state.training_run_id
+        if not run_id and state.training_status in ('未开始', '已停止'):
+            metrics['run_id'] = None
+            metrics['started_at'] = state.training_started_at
+            metrics['finished_at'] = state.training_finished_at
+            return jsonify(metrics)
+        for line in lines:
+            line_str = line if isinstance(line, str) else str(line)
+            marker_match = re.search(r'__TRAINING_RUN_ID__=([A-Za-z0-9_\-]+)', line_str)
+            if marker_match:
+                run_marker = marker_match.group(1)
+                # 若当前内存未记录 run_id，则采用日志中的最新 marker
+                if not run_id:
+                    run_id = run_marker
+                    state.training_run_id = run_id
+
+        parse_lines = lines
+        if run_id:
+            # 从最后一个匹配 run_id 的 marker 开始解析
+            marker_idx = -1
+            for i, line in enumerate(lines):
+                line_str = line if isinstance(line, str) else str(line)
+                if f"__TRAINING_RUN_ID__={run_id}" in line_str:
+                    marker_idx = i
+            if marker_idx >= 0:
+                parse_lines = lines[marker_idx:]
+
         # 从后往前读，找到最新的指标（避免重复日志干扰）
         max_epoch = 0
         max_step = -1
 
-        for line in reversed(lines):
+        for line in reversed(parse_lines):
             line_str = line if isinstance(line, str) else str(line)
 
             # 解析最终结果（优先级最高）
@@ -468,6 +623,8 @@ def get_training_metrics():
                     metrics['for'] = float(step_match.group(4))
 
         metrics['current_epoch'] = max_epoch
+        if max_epoch > 0:
+            metrics['total_epochs'] = max(metrics['total_epochs'], max_epoch)
 
         # 只有在找到 step 时才更新 current_step，否则保持之前的值（避免在训练过程中切换为0）
         if max_step >= 0:
@@ -485,7 +642,7 @@ def get_training_metrics():
 
         # 检查是否有新的训练开始（在判断最终结果之前）
         # 如果检测到新的训练开始，清除最终结果（允许重新训练）
-        has_new_training = any('开始训练任务' in str(line) for line in lines[-10:])
+        has_new_training = any('开始训练任务' in str(line) for line in parse_lines[-10:])
         if has_new_training and metrics['final_accuracy'] is not None:
             # 新训练开始，重置最终结果
             metrics['final_accuracy'] = None
@@ -503,8 +660,34 @@ def get_training_metrics():
             # 如果已有最终结果，保持"已完成"状态，不再进行其他判断
             metrics['status'] = '已完成'
             state.training_status = '已完成'
+            state.training_finished_at = datetime.now().isoformat()
             # 训练完成后，保留最后的 epoch 和 step 信息用于显示
             # 不重置 current_step，保持最后的值
+
+            # 训练首次完成时，将待确认模型信息写入注册表
+            if state.pending_training_model:
+                pending = state.pending_training_model
+                trained_at = datetime.now().isoformat()
+                run_id = pending.get('run_id')
+                # 避免重复写入同一 run
+                already_registered = any(
+                    e.get('version_id') == run_id for e in state.trained_model_registry
+                )
+                if not already_registered:
+                    for side in ('company', 'partner'):
+                        info = pending.get(side, {})
+                        if info:
+                            state.trained_model_registry.append({
+                                'version_id': run_id,
+                                'node_type': info['node_type'],
+                                'model_name': info['model_name'],
+                                'model_type': pending['model_type'],
+                                'path': info['path'],
+                                'files': [],          # 文件在对端 Pod，无法直接访问
+                                'trained_at': trained_at,
+                                'training_params': pending.get('training_params', {}),
+                            })
+                state.pending_training_model = {}
 
             # 🔥 新增：训练完成后，清理 Deployment 的 args，移除训练命令
             # 防止 Pod 重启后自动执行训练，同时允许第二次训练
@@ -595,6 +778,14 @@ def get_training_metrics():
             metrics['status'] = '未开始'
             state.training_status = '未开始'
 
+        # 同步内存状态，供 /api/status 与前端概览统一读取
+        state.current_epoch = metrics.get('current_epoch', state.current_epoch)
+        state.current_step = metrics.get('current_step', state.current_step)
+        state.accuracy = metrics.get('accuracy', state.accuracy)
+        metrics['run_id'] = state.training_run_id
+        metrics['started_at'] = state.training_started_at
+        metrics['finished_at'] = state.training_finished_at
+
         return jsonify(metrics)
 
     except Exception as e:
@@ -629,8 +820,8 @@ def _get_default_company_startup_script(ray_port, partner_service_name):
             ray stop --force || true
             sleep 2
             
-            # 获取 Pod IP
-            export POD_IP=$(hostname -i)
+            # 使用 K8s Downward API 注入的 POD_IP（避免 hostname -i 多网卡问题）
+            export POD_IP=${{POD_IP:-$(hostname -i | tr ' ' '\\n' | head -1)}}
             echo "📍 Pod IP: $POD_IP"
             
             # 使用 Ray CLI 启动 Ray Head（指定端口 {ray_port}）
@@ -682,11 +873,79 @@ def _get_default_company_startup_script(ray_port, partner_service_name):
             tail -f /dev/null"""
 
 
+def _resolve_partner_datasets(prefer_infer: bool = False):
+    """从 Partner WebUI 获取已上传的数据集路径；若无可用数据或网络不通，则返回内置默认路径。
+
+    prefer_infer=False → 返回 (train_path, val_path)
+    prefer_infer=True  → 返回 infer_path (单条路径字符串)
+    """
+    DEFAULT_TRAIN = '/app/partner/guest_train.csv'
+    DEFAULT_VAL   = '/app/partner/guest_test.csv'
+    DEFAULT_INFER = '/app/partner/guest_test.csv'
+
+    if not PARTNER_WEBUI_URL:
+        return DEFAULT_INFER if prefer_infer else (DEFAULT_TRAIN, DEFAULT_VAL)
+
+    try:
+        import urllib.request as _urllib_req
+        with _urllib_req.urlopen(
+            f"{PARTNER_WEBUI_URL}/api/datasets/list", timeout=3
+        ) as resp:
+            data = json.loads(resp.read().decode())
+
+        files = data.get('datasets', {}).get('partner', [])
+        if not files:
+            raise ValueError("partner dataset list is empty")
+
+        # 按文件名关键字分类
+        train_files = [f for f in files if 'train' in f['name'].lower()]
+        val_files   = [f for f in files
+                       if any(k in f['name'].lower() for k in ('test', 'val'))]
+        # 推理优先选 test/val 类文件
+        infer_files = val_files if val_files else files
+
+        if prefer_infer:
+            # 取最近修改的 test/val 类文件，或直接取第一个可用文件
+            candidates = sorted(infer_files,
+                                key=lambda f: f.get('modified', ''), reverse=True)
+            return candidates[0]['path']
+
+        # 训练场景
+        train_path = (sorted(train_files,
+                             key=lambda f: f.get('modified', ''), reverse=True)[0]['path']
+                      if train_files else files[0]['path'])
+        val_path   = (sorted(val_files,
+                             key=lambda f: f.get('modified', ''), reverse=True)[0]['path']
+                      if val_files
+                      else (files[1]['path'] if len(files) > 1 else files[0]['path']))
+        return train_path, val_path
+
+    except Exception as e:
+        log_message(f"无法从 Partner WebUI 获取数据集列表，使用默认路径: {e}", "WARNING")
+        return DEFAULT_INFER if prefer_infer else (DEFAULT_TRAIN, DEFAULT_VAL)
+
+
 def _generate_training_command(model, n_epochs, batch_size, lr, val_steps,
                                n_estimators, max_depth, k_quantiles, reg_coef,
                                pod_ip_placeholder, partner_spu_addr_placeholder,
-                               coordinator_port, ray_port, spu_port):
+                               coordinator_port, ray_port, spu_port,
+                               run_id,
+                               company_model_save_dir, partner_model_save_dir,
+                               company_train_dataset=None, company_val_dataset=None,
+                               partner_train_dataset=None, partner_val_dataset=None):
     """生成训练命令参数（根据模型类型）"""
+    # Company 数据集：优先使用 WebUI 传入的选择值，否则使用默认路径
+    _company_train = company_train_dataset or '/app/company/host_train.csv'
+    _company_val   = company_val_dataset   or '/app/company/host_test.csv'
+
+    # Partner 数据集：优先使用 WebUI 传入值；若未传入则从 Partner WebUI 自动获取，
+    # 若 Partner WebUI 不可达则回退内置默认路径
+    if partner_train_dataset or partner_val_dataset:
+        _partner_train = partner_train_dataset or '/app/partner/guest_train.csv'
+        _partner_val   = partner_val_dataset   or '/app/partner/guest_test.csv'
+    else:
+        _partner_train, _partner_val = _resolve_partner_datasets(prefer_infer=False)
+
     # 🔥 修改：移除 exec，改为 python（这样进程退出不会导致容器退出）
     base_cmd = f"""python company/truerun.py \\
               --mode multi_distributed \\
@@ -695,36 +954,36 @@ def _generate_training_command(model, n_epochs, batch_size, lr, val_steps,
               --coordinator_spu_addr $POD_IP:{coordinator_port} \\
               --ray_head_addr $POD_IP:{ray_port} \\
               --run_psi True \\
-              --path_to_company_train_dataset /app/company/host_train.csv \\
-              --path_to_company_val_dataset /app/company/host_test.csv \\
+              --path_to_company_train_dataset {_company_train} \\
+              --path_to_company_val_dataset {_company_val} \\
               --path_to_company_share /app/company/company_share.csv \\
               --share_y False \\
-              --path_to_partner_train_dataset /app/partner/guest_train.csv \\
-              --path_to_partner_val_dataset /app/partner/guest_test.csv \\
+              --path_to_partner_train_dataset {_partner_train} \\
+              --path_to_partner_val_dataset {_partner_val} \\
               --path_to_partner_share /app/partner/partner_share.csv"""
 
     if model == "SSLR":
-        model_save_dir_company = "/app/company/models/lr_company"
-        model_save_dir_partner = "/app/partner/models/lr_partner"
         cmd = f"""{base_cmd} \\
-              --path_to_company_model_save_dir {model_save_dir_company} \\
-              --path_to_partner_model_save_dir {model_save_dir_partner} \\
+              --path_to_company_model_save_dir {company_model_save_dir} \\
+              --path_to_partner_model_save_dir {partner_model_save_dir} \\
               --model SSLR \\
               --n_epochs {n_epochs} \\
               --batch_size {batch_size} \\
               --val_steps {val_steps} \\
               --lr {lr}"""
     else:  # SSXGBoost
-        model_save_dir_company = "/app/company/models/xgb_company"
-        model_save_dir_partner = "/app/partner/models/xgb_partner"
         cmd = f"""{base_cmd} \\
-              --path_to_company_model_save_dir {model_save_dir_company} \\
-              --path_to_partner_model_save_dir {model_save_dir_partner} \\
+              --path_to_company_model_save_dir {company_model_save_dir} \\
+              --path_to_partner_model_save_dir {partner_model_save_dir} \\
               --model SSXGBoost \\
               --n_estimators {n_estimators} \\
               --max_depth {max_depth} \\
               --reg_coef {reg_coef} \\
               --K_quantiles {k_quantiles}"""
+
+    # 每次训练写入唯一标记，便于后端仅解析当前训练进度
+    cmd = f"""echo "__TRAINING_RUN_ID__={run_id}"
+{cmd}"""
 
     # 🔥 关键修改：在训练命令后添加 tail -f /dev/null，保持容器运行
     # 这样即使训练完成，容器也不会退出，避免自动重启
@@ -1031,6 +1290,12 @@ def start_training():
         reg_coef = params.get(
             'reg_coef', training_defaults.get('reg_coef', 0.0))
 
+        # 数据集路径（可由前端传入，否则使用默认值）
+        company_train_dataset = params.get('company_train_dataset') or None
+        company_val_dataset = params.get('company_val_dataset') or None
+        partner_train_dataset = params.get('partner_train_dataset') or None
+        partner_val_dataset = params.get('partner_val_dataset') or None
+
         log_message(
             f"[INFO] 训练参数 - Model: {model}, Epochs: {n_epochs}, Batch: {batch_size}, LR: {lr}, ValSteps: {val_steps}, Trees: {n_estimators}, Depth: {max_depth}, Quantiles: {k_quantiles}, Reg: {reg_coef}", "INFO")
 
@@ -1093,6 +1358,25 @@ def start_training():
         if ray_match:
             ray_port = int(ray_match.group(1))
 
+        # 为本次训练生成唯一 run_id 与模型目录（多版本保留）
+        run_id = _new_training_run_id()
+        model_dirs = _build_model_dirs(model, run_id)
+        training_params = {
+            "model": model,
+            "n_epochs": n_epochs,
+            "batch_size": batch_size,
+            "lr": lr,
+            "val_steps": val_steps,
+            "n_estimators": n_estimators,
+            "max_depth": max_depth,
+            "k_quantiles": k_quantiles,
+            "reg_coef": reg_coef,
+            "company_train_dataset": company_train_dataset or '/app/company/host_train.csv',
+            "company_val_dataset": company_val_dataset or '/app/company/host_test.csv',
+            "partner_train_dataset": partner_train_dataset or '/app/partner/guest_train.csv',
+            "partner_val_dataset": partner_val_dataset or '/app/partner/guest_test.csv',
+        }
+
         # 生成新的训练命令
         training_cmd = _generate_training_command(
             model=model,
@@ -1108,7 +1392,14 @@ def start_training():
             partner_spu_addr_placeholder="$PARTNER_SPU_ADDR",
             coordinator_port=coordinator_port,
             ray_port=ray_port,
-            spu_port=spu_port
+            spu_port=spu_port,
+            run_id=run_id,
+            company_model_save_dir=model_dirs["company_path"],
+            partner_model_save_dir=model_dirs["partner_path"],
+            company_train_dataset=company_train_dataset,
+            company_val_dataset=company_val_dataset,
+            partner_train_dataset=partner_train_dataset,
+            partner_val_dataset=partner_val_dataset
         )
 
         # 构建完整的启动脚本
@@ -1145,8 +1436,8 @@ def start_training():
             ray stop --force || true
             sleep 2
             
-            # 获取 Pod IP
-            export POD_IP=$(hostname -i)
+            # 使用 K8s Downward API 注入的 POD_IP（避免 hostname -i 多网卡问题）
+            export POD_IP=${POD_IP:-$(hostname -i | tr ' ' '\n' | head -1)}
             echo "📍 Pod IP: $POD_IP"
             
             # 使用 Ray CLI 启动 Ray Head（指定端口 {ray_port}）
@@ -1243,20 +1534,40 @@ def start_training():
             body={'spec': {'replicas': 1}}
         )
 
-        # 重置训练状态和指标
+        # 重置训练状态和指标（为新 run 清空旧状态）
         state.training_status = "PSI中"  # 初始状态设为PSI中，因为训练开始时会先执行PSI
+        state.training_run_id = run_id
+        state.training_started_at = datetime.now().isoformat()
+        state.training_finished_at = None
         state.current_step = 0
         state.current_epoch = 0
+        state.total_epochs = n_epochs if model == "SSLR" else 0
         state.accuracy = 0.0
         state.loss = 0.0
+
+        # 记录本次训练的待确认模型信息（训练完成后写入注册表）
+        state.pending_training_model = {
+            "run_id": run_id,
+            "model_type": model_dirs["model_type"],
+            "training_params": training_params,
+            "company": {"model_name": model_dirs["company_model_name"], "path": model_dirs["company_path"],
+                        "node_type": "company"},
+            "partner": {"model_name": model_dirs["partner_model_name"], "path": model_dirs["partner_path"],
+                        "node_type": "partner"},
+        }
 
         # 🔥 重置清理标志，允许新训练完成后再次清理配置
         if hasattr(state, '_deployment_cleaned_after_training'):
             delattr(state, '_deployment_cleaned_after_training')
 
         log_message(
-            f"训练任务已启动 - Model: {model} (namespace: {namespace})", "INFO")
-        return jsonify({"status": "success", "message": f"已启动 {model} 训练", "training_status": "PSI中"})
+            f"训练任务已启动 - run_id={run_id}, Model={model} (namespace: {namespace})", "INFO")
+        return jsonify({
+            "status": "success",
+            "message": f"已启动 {model} 训练",
+            "training_status": "PSI中",
+            "run_id": run_id
+        })
 
     except Exception as e:
         # 获取完整的异常堆栈
@@ -1305,67 +1616,95 @@ if __name__ == '__main__':
 
 @app.route('/api/models/list')
 def list_models():
-    """获取所有训练完成的模型列表"""
+    """获取所有训练完成的模型列表。
+    优先使用本次会话的训练注册表（不依赖跨 Pod 文件系统访问）；
+    若注册表为空，则扫描本地文件系统，但只返回应用启动后新写入的模型
+    （通过文件 mtime 过滤，排除镜像内预置的旧模型）。
+    """
     try:
-        models = []
+        # Partner 端直接代理 Company 的模型注册视图，保证两端看到同一批训练结果
+        if IS_READONLY and COMPANY_WEBUI_URL:
+            try:
+                import urllib.request as _urllib_req
+                with _urllib_req.urlopen(
+                    f"{COMPANY_WEBUI_URL}/api/models/list", timeout=3
+                ) as resp:
+                    data = json.loads(resp.read().decode())
+                    if data.get('status') == 'success':
+                        return jsonify(data)
+            except Exception:
+                pass
 
-        # 扫描 company 和 partner 的 models 目录
+        # ── 优先：使用内存注册表（本次 session 训练结果）──────────────────
+        if state.trained_model_registry:
+            ordered = sorted(
+                state.trained_model_registry,
+                key=lambda x: x.get('trained_at', ''),
+                reverse=True
+            )
+            return jsonify({
+                'status': 'success',
+                'models': [
+                    {k: v for k, v in m.items() if not k.startswith('_')}
+                    for m in ordered
+                ]
+            })
+
+        # ── 降级：扫描本地文件系统，过滤掉镜像内预置模型 ─────────────────
+        models = []
         for node_type in ['company', 'partner']:
             models_dir = project_root / node_type / 'models'
-
             if not models_dir.exists():
                 continue
 
-            # 遍历模型目录
             for model_dir in models_dir.iterdir():
                 if not model_dir.is_dir():
                     continue
 
-                # 获取模型信息
-                info_file = model_dir / 'info.json'
-                if info_file.exists():
-                    with open(info_file, 'r') as f:
-                        info = json.load(f)
-                else:
-                    info = {}
-
-                # 获取模型文件列表
-                model_files = []
+                # 获取目录内所有文件
+                model_files_raw = []
                 for file_path in model_dir.iterdir():
                     if file_path.is_file():
-                        model_files.append({
+                        st = file_path.stat()
+                        model_files_raw.append({
                             'name': file_path.name,
-                            'size': file_path.stat().st_size,
-                            'modified': datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
+                            'size': st.st_size,
+                            'modified': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                            '_mtime': st.st_mtime,
                         })
 
-                # 判断模型类型
+                if not model_files_raw:
+                    continue
+
+                # 只展示在应用启动之后写入的模型（排除镜像内预置的旧文件）
+                newest_mtime = max(f['_mtime'] for f in model_files_raw)
+                if newest_mtime <= APP_START_TIME:
+                    continue
+
                 model_type = 'unknown'
                 if 'lr' in model_dir.name.lower():
                     model_type = 'SSLR (逻辑回归)'
                 elif 'xgb' in model_dir.name.lower():
-                    model_type = 'XGBoost'
+                    model_type = 'SSXGBoost'
 
+                model_files = [
+                    {k: v for k, v in f.items() if k != '_mtime'}
+                    for f in model_files_raw
+                ]
                 models.append({
                     'node_type': node_type,
                     'model_name': model_dir.name,
                     'model_type': model_type,
-                    'info': info,
                     'files': model_files,
-                    'path': str(model_dir)
+                    'path': str(model_dir),
                 })
 
-        return jsonify({
-            'status': 'success',
-            'models': models
-        })
+        models = sorted(models, key=lambda x: x.get('path', ''), reverse=True)
+        return jsonify({'status': 'success', 'models': models})
 
     except Exception as e:
         log_message(f"获取模型列表失败: {str(e)}", "ERROR")
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 @app.route('/api/models/download/<node_type>/<model_name>/<filename>')
@@ -1462,34 +1801,297 @@ def view_model_file(node_type, model_name, filename):
         }), 500
 
 
+@app.route('/api/datasets/list')
+def list_datasets():
+    """获取当前节点可用的 CSV 数据集列表（扫描节点根目录和持久化上传目录）。
+    每端只返回自身角色对应的数据集，不做跨节点查询。
+    """
+    try:
+        own_type = 'partner' if IS_READONLY else 'company'
+        scan_dirs = [
+            project_root / own_type,
+            project_root / own_type / 'Datasets' / 'uploads',
+        ]
+        seen = set()
+        csv_files = []
+        for scan_dir in scan_dirs:
+            if not scan_dir.exists():
+                continue
+            for f in sorted(scan_dir.iterdir()):
+                if f.is_file() and f.suffix.lower() == '.csv' and f.name not in seen:
+                    seen.add(f.name)
+                    csv_files.append({
+                        'name': f.name,
+                        'path': str(f),
+                        'size': f.stat().st_size,
+                        'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                    })
+
+        return jsonify({'status': 'success', 'datasets': {own_type: csv_files}})
+
+    except Exception as e:
+        log_message(f"获取数据集列表失败: {str(e)}", "ERROR")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/datasets/upload', methods=['POST'])
+def upload_dataset():
+    """上传 CSV 数据集文件到本节点的持久化目录（Datasets/uploads）。
+    每端只能上传自身角色对应的数据集（Company 上传 company 类型，Partner 上传 partner 类型）。
+    """
+    try:
+        own_type = 'partner' if IS_READONLY else 'company'
+        node_type = request.form.get('node_type', own_type)
+
+        # 每端只允许上传自己的数据集
+        if node_type != own_type:
+            return jsonify({
+                'status': 'error',
+                'message': f'当前节点只能上传 {own_type} 类型的数据集'
+            }), 403
+
+        if 'file' not in request.files:
+            return jsonify({'status': 'error', 'message': '未找到上传文件'}), 400
+        file = request.files['file']
+        if not file.filename:
+            return jsonify({'status': 'error', 'message': '文件名为空'}), 400
+        if not file.filename.lower().endswith('.csv'):
+            return jsonify({'status': 'error', 'message': '只允许上传 CSV 文件'}), 400
+
+        import re as _re
+        safe_name = _re.sub(r'[^\w\-.]', '_', file.filename)
+
+        save_dir = project_root / own_type / 'Datasets' / 'uploads'
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / safe_name
+        file.save(str(save_path))
+
+        log_message(
+            f"数据集已上传: {own_type}/Datasets/uploads/{safe_name} ({save_path.stat().st_size} bytes)",
+            "INFO"
+        )
+        return jsonify({
+            'status': 'success',
+            'message': f'文件 {safe_name} 已上传',
+            'path': str(save_path),
+            'filename': safe_name
+        })
+
+    except Exception as e:
+        log_message(f"上传数据集失败: {str(e)}", "ERROR")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/models/delete/<node_type>/<model_name>', methods=['POST'])
 @require_write_permission
 def delete_model(node_type, model_name):
     """删除指定的模型（仅 Company 节点可用）"""
     try:
-        # 构建模型目录路径
+        # 从内存注册表中移除（同时覆盖同类型的两端模型，因为注册表是按训练批次写入的）
+        before = len(state.trained_model_registry)
+        state.trained_model_registry = [
+            m for m in state.trained_model_registry
+            if not (m['node_type'] == node_type and m['model_name'] == model_name)
+        ]
+        removed_from_registry = len(state.trained_model_registry) < before
+
+        # 尝试删除本地文件系统中的目录（WebUI Pod 可能无法访问实际模型文件）
         model_dir = project_root / node_type / 'models' / model_name
+        if model_dir.exists() and model_dir.is_dir():
+            import shutil
+            shutil.rmtree(model_dir)
+            log_message(f"已删除模型文件: {node_type}/{model_name}", "INFO")
 
-        if not model_dir.exists() or not model_dir.is_dir():
-            return jsonify({
-                'status': 'error',
-                'message': '模型目录不存在'
-            }), 404
+        if removed_from_registry or model_dir.exists() is False:
+            log_message(f"已删除模型注册: {node_type}/{model_name}", "INFO")
+            return jsonify({'status': 'success', 'message': f'模型 {model_name} 已删除'})
 
-        # 删除整个模型目录
-        import shutil
-        shutil.rmtree(model_dir)
-
-        log_message(f"已删除模型: {node_type}/{model_name}", "INFO")
-
-        return jsonify({
-            'status': 'success',
-            'message': f'模型 {model_name} 已删除'
-        })
+        return jsonify({'status': 'error', 'message': '模型不存在'}), 404
 
     except Exception as e:
         log_message(f"删除模型失败: {str(e)}", "ERROR")
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 推理相关接口
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 推理任务全局状态
+infer_state = {
+    'status': 'idle',       # idle / running / success / error
+    'result': None,         # 推理结果 list[{id, prediction}]
+    'message': '',
+    'started_at': None,
+    'finished_at': None,
+}
+
+
+def _run_infer_task(model_type: str, company_model_path: str, partner_model_path: str,
+                    company_data_path: str, partner_data_path: str):
+    """
+    在后台线程中以子进程方式执行推理（仿照训练的子进程方式）。
+    调用 company/infer_run.py，从其 stdout 最后一行解析 JSON 结果。
+    """
+    import json as _json
+
+    try:
+        infer_state['status'] = 'running'
+        infer_state['message'] = '推理任务启动中...'
+        log_message("开始执行推理任务（子进程模式）", "INFO")
+
+        # 优先使用 K8s 注入的环境变量（与训练脚本保持一致）
+        # POD_IP / HOST_IP 由 commonEnv helper 注入；PARTNER_SPU_ADDR 由 values 注入
+        import socket as _socket
+        pod_ip = (os.environ.get('POD_IP') or
+                  os.environ.get('HOST_IP') or
+                  _socket.gethostbyname(_socket.gethostname()))
+
+        # SPU/Ray 端口与 Helm values 保持一致（固定值）
+        spu_port = 9394
+        coordinator_port = 9396
+        ray_port_num = 6379
+
+        company_spu_addr = f'{pod_ip}:{spu_port}'
+        coordinator_spu_addr = f'{pod_ip}:{coordinator_port}'
+        ray_head_addr = f'{pod_ip}:{ray_port_num}'
+
+        # Partner 地址：优先使用环境变量，否则从 config.yaml 拼接
+        partner_spu_addr = os.environ.get('PARTNER_SPU_ADDR', '')
+        if not partner_spu_addr:
+            cfg = state.config
+            partner_cfg = cfg.get('partner', {})
+            partner_ip = partner_cfg.get('ip', '127.0.0.1')
+            partner_spu_addr = f"{partner_ip}:9395"
+
+        infer_script = str(project_root / 'company' / 'infer_run.py')
+        cmd = [
+            'python', infer_script,
+            '--mode',                 'multi_distributed',
+            '--ray_head_addr',        ray_head_addr,
+            '--company_spu_addr',     company_spu_addr,
+            '--partner_spu_addr',     partner_spu_addr,
+            '--coordinator_spu_addr', coordinator_spu_addr,
+            '--model',                model_type,
+            '--company_model_path',   company_model_path,
+            '--partner_model_path',   partner_model_path,
+            '--company_data_path',    company_data_path,
+            '--partner_data_path',    partner_data_path,
+        ]
+        log_message(f"推理命令: {' '.join(cmd)}", "INFO")
+
+        infer_state['message'] = '子进程启动中，等待推理完成...'
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(project_root / 'company'),
+        )
+
+        # 将 stderr 写入日志，方便排查
+        if proc.stderr:
+            for line in proc.stderr.strip().splitlines():
+                log_message(f"[infer_run] {line}", "INFO")
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"infer_run.py 退出码 {proc.returncode}:\n{proc.stderr[-2000:]}")
+
+        # 从 stdout 最后一行解析 JSON 结果
+        stdout_lines = [l for l in proc.stdout.strip().splitlines()
+                        if l.strip()]
+        if not stdout_lines:
+            raise RuntimeError("infer_run.py 无输出")
+        last_line = stdout_lines[-1]
+        output = _json.loads(last_line)
+
+        if output.get('status') != 'success':
+            raise RuntimeError(output.get('result', '推理失败'))
+
+        result = output['result']
+        infer_state['status'] = 'success'
+        infer_state['result'] = result
+        infer_state['message'] = f'推理完成，共 {len(result)} 条结果'
+        infer_state['finished_at'] = datetime.now().isoformat()
+        log_message(f"推理完成，共 {len(result)} 条结果", "INFO")
+
+    except Exception as e:
+        infer_state['status'] = 'error'
+        infer_state['message'] = str(e)
+        infer_state['finished_at'] = datetime.now().isoformat()
+        log_message(f"推理失败: {str(e)}", "ERROR")
+
+
+@app.route('/api/infer/start', methods=['POST'])
+@require_write_permission
+def start_infer():
+    """启动推理任务"""
+    global infer_state
+    if infer_state['status'] == 'running':
+        return jsonify({'status': 'error', 'message': '推理任务正在执行中，请等待'}), 400
+
+    params = request.get_json() or {}
+    model_type = params.get('model_type', 'SSLR')
+    company_model_path = params.get('company_model_path', '')
+    partner_model_path = params.get('partner_model_path', '')
+    company_data_path = params.get('company_data_path', '')
+    partner_data_path = params.get('partner_data_path', '') or ''
+
+    # Partner 推理数据路径：未指定时自动从 Partner WebUI 获取，或使用内置默认路径
+    if not partner_data_path:
+        partner_data_path = _resolve_partner_datasets(prefer_infer=True)
+        log_message(f"Partner 推理数据集自动解析为: {partner_data_path}", "INFO")
+
+    if not all([company_model_path, partner_model_path, company_data_path]):
+        return jsonify({'status': 'error', 'message': '请提供模型路径和 Company 数据路径'}), 400
+
+    infer_state = {
+        'status': 'running',
+        'result': None,
+        'message': '推理任务已提交',
+        'started_at': datetime.now().isoformat(),
+        'finished_at': None,
+    }
+
+    t = threading.Thread(
+        target=_run_infer_task,
+        args=(model_type, company_model_path, partner_model_path,
+              company_data_path, partner_data_path),
+        daemon=True
+    )
+    t.start()
+
+    return jsonify({'status': 'success', 'message': '推理任务已启动'})
+
+
+@app.route('/api/infer/status')
+def get_infer_status():
+    """查询推理任务状态和结果"""
+    resp = {
+        'status': infer_state['status'],
+        'message': infer_state['message'],
+        'started_at': infer_state['started_at'],
+        'finished_at': infer_state['finished_at'],
+    }
+    if infer_state['status'] == 'success':
+        resp['result'] = infer_state['result']
+        resp['count'] = len(infer_state['result']
+                            ) if infer_state['result'] else 0
+    return jsonify(resp)
+
+
+@app.route('/api/infer/reset', methods=['POST'])
+@require_write_permission
+def reset_infer():
+    """重置推理状态"""
+    global infer_state
+    if infer_state['status'] == 'running':
+        return jsonify({'status': 'error', 'message': '推理任务正在执行中，无法重置'}), 400
+    infer_state = {
+        'status': 'idle',
+        'result': None,
+        'message': '',
+        'started_at': None,
+        'finished_at': None,
+    }
+    return jsonify({'status': 'success', 'message': '推理状态已重置'})

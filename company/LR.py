@@ -19,7 +19,7 @@ from sklearn.metrics import accuracy_score
 class SSLR(SSML):
     """秘密共享逻辑回归模型，支持二分类和多分类任务"""
     
-    def __init__(self, devices: dict, lambda_ : float = 0, approx : bool = True):
+    def __init__(self, devices: dict, lambda_ : float = 1e-5, approx : bool = True):
         """
         初始化SSLR模型
         ## Args: 
@@ -487,4 +487,4 @@ def SSLR_test(dataset):
     plt.close()
 
 if __name__ == "__main__":
-    SSLR_test("breast")
+    SSLR_test("shop")

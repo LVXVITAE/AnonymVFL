@@ -53,7 +53,7 @@ class Leaf:
 
 
 class Tree(SSML):
-    def __init__(self, devices: dict, lambda_: float = 1e-5, gamma: float = 0.5, max_depth: int = 3, div: bool = False, mission='Classification'):
+    def __init__(self, devices: dict, lambda_: float = 1e-5, gamma: float = 0.0, max_depth: int = 3, div: bool = False, mission='Classification'):
         """
         初始化决策树
         ## Args:
@@ -65,6 +65,7 @@ class Tree(SSML):
             'partner': partner,
            }
         - lambda_: l2正则化参数，默认为1e-5
+        - gamma: 信息增益阈值，默认为0.0。用于控制树的节点数量，增益小于该阈值的分裂将被剪枝。
         - max_depth: 树的最大深度，默认为3
         - div: 是否使用除法。如果为True，则使用除法计算叶子权重和信息增益；如果为False，则使用优化算法计算叶子权重和增益最大分裂点。
         - mission: 任务类型，'Classification'或'Regression'，默认为'Classification'
@@ -604,7 +605,7 @@ class Tree(SSML):
 
 
 class SSXGBoost(SSML):
-    def __init__(self, devices: dict, n_estimators=3, lambda_=1e-5, gamma = 0.5, max_depth=3, div=False, mission='Classification'):
+    def __init__(self, devices: dict, n_estimators=3, lambda_=1e-5, gamma = 0.0, max_depth=3, div=False, mission='Classification'):
         """
         初始化SSXGBoost模型
         ## Args:
@@ -617,7 +618,7 @@ class SSXGBoost(SSML):
            }
         - n_estimators: 树的数量，默认为5
         - lambda_: l2正则化参数，默认为1e-5
-        - gamma：叶节点数量惩罚系数，默认0.5
+        - gamma: 信息增益阈值，默认为0.0。用于控制树的节点数量，增益小于该阈值的分裂将被剪枝。
         - max_depth: 树的最大深度，默认为3
         - div: 是否使用除法。如果为True，则使用除法计算叶子权重和信息增益；如果为False，则使用优化算法计算叶子权重和增益最大分裂点。
         """
@@ -1022,41 +1023,46 @@ def quantize_buckets(X: np.ndarray, k: int = 50) -> tuple[np.ndarray, np.ndarray
     for j in range(X.shape[1]):
         # 获取当前特征列
         col = X[:, j]
-        # 1) 计算分位点
-        qs = np.quantile(col, [(i + 1) / (k + 1) for i in range(k)]).round(3)
+        # 1) 计算分位点（去重，避免唯一值少于k时产生大量重复分位点）
+        qs = np.quantile(col, [(i + 1) / (k + 1) for i in range(k)])
+        qs_unique = np.unique(qs)
         Quantiles_j = []
         # 2) 排序后等分索引
         buckets_j = []
         # 初始化左边界为负无穷
         left = float('-inf')
-        # 设置右边界为第一个分位点
-        right = qs[0]
-        # 遍历每个分位点
-        for i in range(len(qs)):
+        # 遍历去重后的分位点
+        for i in range(len(qs_unique)):
+            right = qs_unique[i]
             # 计算每个分位点对应的索引范围
             indices = np.where((col > left) & (col <= right))[0]
             # 如果有样本落入该区间
             if len(indices) > 0:
-                indices = indices
                 # 保存分位点值
                 Quantiles_j.append(right)
                 # 保存落入该区间的样本索引
                 buckets_j.append(indices)
                 # 设置标签
-                label_matrix[indices, j] = i
-            # 更新左右边界
+                label_matrix[indices, j] = len(Quantiles_j) - 1
+            # 更新左边界
             left = right
-            # 设置下一个右边界
-            right = float('inf') if i == len(qs) - 1 else qs[i + 1]
         # 3) 处理最后一个区间的样本
         indices = np.where(col > left)[0]
         # 如果有样本落入最后一个区间
         if len(indices) > 0:
-            indices = indices
             # 保存最后一个桶
             buckets_j.append(indices)
-            # 设置标签为k
-            label_matrix[indices, j] = k
+            # 设置标签
+            label_matrix[indices, j] = len(Quantiles_j)
+
+        # 4) 将 Quantiles_j 填充到长度 k，保证所有特征的分位点数量一致
+        #    填充值使用最后一个分位点（不影响树的分裂逻辑）
+        if len(Quantiles_j) < k and len(Quantiles_j) > 0:
+            pad_val = Quantiles_j[-1]
+            Quantiles_j.extend([pad_val] * (k - len(Quantiles_j)))
+        elif len(Quantiles_j) == 0:
+            # 特征只有一个唯一值，用该值填充
+            Quantiles_j = [float(col[0])] * k
 
         # 保存当前特征的分位点和桶列表
         Quantiles.append(Quantiles_j)
@@ -1184,7 +1190,7 @@ def SSXGBoost_test(dataset):
 
 if __name__ == "__main__":
     start_time = time()
-    SSXGBoost_test("breast")
+    SSXGBoost_test("shop")
     end_time = time()
     print(f"SSXGBoost test completed in {end_time - start_time:.2f} seconds.")
     # SSXGBoost_test("adult")

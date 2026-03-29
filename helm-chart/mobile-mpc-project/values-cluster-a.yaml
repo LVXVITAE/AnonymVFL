@@ -10,7 +10,7 @@ company:
   
   image:
     repository: "mobile-mpc-company"
-    tag: "v1.0.16"
+    tag: "v1.0.19"
     pullPolicy: "Never"  # 使用本地镜像
   
   replicas: 1
@@ -58,7 +58,7 @@ webui:
   
   image:
     repository: "mobile-mpc-company"  # 使用 company 镜像（包含 Web UI）
-    tag: "v1.0.16"
+    tag: "v1.0.19"
     pullPolicy: "Never"
   
   replicas: 1
@@ -81,6 +81,10 @@ webui:
   env:
     - name: NODE_ROLE
       value: "company"
+    # Partner WebUI 的访问地址，用于训练/推理时自动获取 Partner 已上传的数据集路径
+    # 格式：http://<集群B节点IP>:<Partner WebUI NodePort>
+    - name: PARTNER_WEBUI_URL
+      value: "http://192.168.58.2:30081"
 
 # 持久化存储配置
 persistence:

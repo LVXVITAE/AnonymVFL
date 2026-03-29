@@ -1,5 +1,6 @@
 # 导入命令行参数解析和数值计算相关库
 import argparse
+from csv import Error
 import numpy as np
 import pandas as pd
 import secretflow as sf
@@ -238,8 +239,7 @@ def main(args: argparse.Namespace):
             from XGBoost import recover_buckets
             # 从分桶标签恢复完整的分桶信息
             buckets = recover_buckets(bucket_labels)
-            # 如果没有指定分桶保存路径，使用默认路径（保存在Company分片同级目录下的buckets.npy）
-            if not args.path_to_buckets:
+            if args.path_to_buckets is None:
                 default_bucket_path = os.path.join(os.path.dirname(
                     args.path_to_company_share), "buckets.npy")
                 args.path_to_buckets = default_bucket_path
@@ -380,12 +380,10 @@ def main(args: argparse.Namespace):
     if args.share_y:
         # 如果需要共享标签
         if args.model == "SSXGBoost":
-            # XGBoost模型：在SPU上合并标签
-            y_train = share2spu(y_train_company, y_train_partner)
+            raise ValueError("SSXGBoost does not support label sharing (share_y=True)")
         else:
-            # 其他模型：在标签持有者设备上合并标签
-            y_train = train_label_keeper(lambda x, y: x + y)(y_train_company.to(
-                train_label_keeper), y_train_partner.to(train_label_keeper))
+            # share_y=True 时，SSLR 使用 SPU 上的标签并启用近似 sigmoid。
+            y_train = share2spu(y_train_company, y_train_partner)
     else:
         # 如果不需要共享标签
         if args.model == "SSXGBoost":
@@ -393,8 +391,9 @@ def main(args: argparse.Namespace):
             y_train = train_label_keeper(lambda x, y: x + y)(y_train_company.to(
                 train_label_keeper), y_train_partner.to(train_label_keeper))
         else:
-            # 其他模型：在SPU上合并标签
-            y_train = share2spu(y_train_company, y_train_partner)
+            # share_y=False 时，SSLR 标签应保留在主动方 PYU，避免 approx=False 的断言失败。
+            y_train = train_label_keeper(lambda x, y: x + y)(y_train_company.to(
+                train_label_keeper), y_train_partner.to(train_label_keeper))
 
     def read_val_dataset(path):
         """读取验证数据集
@@ -445,16 +444,15 @@ def main(args: argparse.Namespace):
         print(f"   • 训练轮数: {args.n_epochs}")
         print(f"   • 批次大小: {args.batch_size}")
         print(f"   • 学习率:   {args.lr}")
+        print(f"   • 正则化系数: {args.reg_coef}")
         print(f"   • 验证频率: 每 {args.val_steps} 步")
         print(f"   • 标签共享: {'是' if args.share_y else '否'}")
         print("=" * 60)
 
-        model = SSLR(devices, approx=args.share_y)
-        # 执行模型训练，返回每轮的准确率
+        model = SSLR(devices, lambda_=args.reg_coef, approx=args.share_y)
         accs = model.fit(X_train, y_train, X_test, y_test, n_epochs=args.n_epochs,
                          batch_size=args.batch_size, val_steps=args.val_steps, lr=args.lr)
-        # 检查是否指定了模型保存路径
-        if hasattr(args, 'path_to_company_model_save_dir') and hasattr(args, 'path_to_partner_model_save_dir'):
+        if args.path_to_company_model_save_dir is not None and args.path_to_partner_model_save_dir is not None:
             print(f"\n💾 保存训练好的模型权重")
             print("=" * 60)
             print(f"📁 Company 模型权重保存路径: {args.path_to_company_model_save_dir}")
@@ -485,13 +483,13 @@ def main(args: argparse.Namespace):
         print(f"   • 树数量: {args.n_estimators}")
         print(f"   • 最大深度: {args.max_depth}")
         print(f"   • 正则化系数: {args.reg_coef}")
+        print(f"   • 信息增益阈值: {args.gamma}")
         print(f"   • 分位点数: {args.K_quantiles}")
         print(f"   • 标签共享: {'是' if args.share_y else '否'}")
         print("=" * 60)
 
         model = SSXGBoost(devices=devices, n_estimators=args.n_estimators,
-                          lambda_=args.reg_coef, max_depth=args.max_depth)
-        # 执行模型训练，返回训练和测试准确率
+                          lambda_=args.reg_coef, gamma=args.gamma, max_depth=args.max_depth)
         train_accs, test_accs = model.fit(
             X_train, y_train, buckets, FedQuantiles, X_test, y_test)
         # 输出结果
@@ -501,7 +499,7 @@ def main(args: argparse.Namespace):
             print(f"📊 测试集准确率: {test_accs}")
 
         # 保存模型
-        if hasattr(args, 'path_to_company_model_save_dir') and hasattr(args, 'path_to_partner_model_save_dir') and args.path_to_company_model_save_dir and args.path_to_partner_model_save_dir:
+        if args.path_to_company_model_save_dir is not None and args.path_to_partner_model_save_dir is not None:
             print(f"\n💾 保存训练好的模型")
             print("=" * 60)
             print(f"📁 Company 模型保存路径: {args.path_to_company_model_save_dir}")
@@ -551,19 +549,19 @@ if __name__ == "__main__":
                         required=False, help='Coordinator SPU的地址，注意不要和Ray端口冲突')
     parser.add_argument('--run_psi', type=bool, default=True, help='是否运行PSI')
     parser.add_argument('--path_to_company_train_dataset',
-                        type=str, default="", help='Company端训练集路径。数据集应为明文csv文件。')
+                        type=str, default="./company_train.csv", help='Company端训练集路径。数据集应为明文csv文件。')
     parser.add_argument('--path_to_partner_train_dataset',
-                        type=str, default="", help='Partner端训练集路径。数据集应为明文csv文件。')
-    parser.add_argument('--path_to_company_share', type=str, default="",
+                        type=str, default="./partner_train.csv", help='Partner端训练集路径。数据集应为明文csv文件。')
+    parser.add_argument('--path_to_company_share', type=str, default="./company_share.csv",
                         help='Company端PSI输出共享分片保存路径。如运行PSI，保存到该路径；如不运行PSI，从该路径读取分片')
-    parser.add_argument('--path_to_partner_share', type=str, default="",
+    parser.add_argument('--path_to_partner_share', type=str, default="./partner_share.csv",
                         help='Partner端PSI输出共享分片保存路径。如运行PSI，保存到该路径；如不运行PSI，从该路径读取分片')
     parser.add_argument('--share_y', type=bool,
                         default=False, help='是否秘密共享共享标签y')
     parser.add_argument('--path_to_company_val_dataset',
-                        type=str, default="", help='Company端验证集路径。数据集应为明文csv文件。')
+                        type=str, required=False, help='Company端验证集路径。数据集应为明文csv文件。')
     parser.add_argument('--path_to_partner_val_dataset',
-                        type=str, default="", help='Partner端验证集路径。数据集应为明文csv文件。')
+                        type=str, required=False, help='Partner端验证集路径。数据集应为明文csv文件。')
     parser.add_argument('--model', type=str, default='SSLR',
                         choices=['SSLR', 'SSXGBoost'], help='选择要运行的模型')
     parser.add_argument('--n_epochs', type=int, default=10, help='训练轮数')
@@ -576,13 +574,14 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_partner_model_save_dir',
                         type=str, required=False, help='Partner端模型保存路径')
     parser.add_argument('--reg_coef', type=float,
-                        default=0.0, help='XGBoost正则化系数')
+                        default=1e-5, help='l2正则化系数')
+    parser.add_argument('--gamma', type=float, default=0.0, help='XGBoost信息增益阈值，用于控制树的节点数量')
     parser.add_argument('--n_estimators', type=int,
                         default=2, help='XGBoost决策树数量')
     parser.add_argument('--max_depth', type=int,
                         default=2, help='XGBoost树最大深度')
     parser.add_argument('--K_quantiles', type=int,
-                        default=1, help='用于联邦XGBoost的量化分位数')
+                        default=10, help='用于联邦XGBoost的量化分位数')
     parser.add_argument('--path_to_buckets', type=str,
                         required=False, help='联邦XGBoost量化分位数保存路径')
     args = parser.parse_args()
