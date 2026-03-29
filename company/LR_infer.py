@@ -1,9 +1,8 @@
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
-from SharedVariable import SharedVariable
 import numpy as np
 from tqdm import trange, tqdm
-from common import out_dom, compute_accuracy
+from common import compute_accuracy
 import jax.numpy as jnp
 import secretflow as sf
 from secretflow.device import SPUObject, PYUObject
@@ -461,133 +460,6 @@ class LR:
 
                 y_pred = self.forward(X_batch)
                 self.backward(X_batch, y_batch, y_pred, lr=0.1 / t)
-
-# 早期测试使用，可暂时忽略
-
-
-class LRSS:
-    def __init__(self, in_features, out_features=1, lambda_=0):
-        self.out_features = out_features
-        self.w = SharedVariable(
-            np.zeros((in_features, out_features)), np.zeros((in_features, out_features)))
-        self.lambda_ = lambda_
-
-    @staticmethod
-    def activate_fn(X: SharedVariable):
-        GT_idx = np.argwhere(X > 1/2)
-        LT_idx = np.argwhere(X < -1/2)
-        X += 1/2
-        for i, j in GT_idx:
-            X[i, j] = 1
-        for i, j in LT_idx:
-            X[i, j] = 0
-        return X
-
-    def forward(self, X: SharedVariable):
-        return self.activate_fn(X @ self.w)
-
-    def predict(self, X: np.ndarray):
-        y = np.clip((X @ self.w.reveal()) + 1/2, 0, 1).round()
-        if self.out_features == 1:
-            return y
-        else:
-            return y.argmax(axis=1).reshape(-1, 1)
-
-    def backward(self, X: SharedVariable, y: SharedVariable, y_pred: SharedVariable, lr=0.1):
-        batch_size = X.shape()[0]
-        diff = y_pred - y
-        self.w = (1 - self.lambda_) * self.w - \
-            (lr/batch_size) * (X.transpose() @ diff)
-
-
-# 早期测试用，可忽略
-
-
-def train(train_X: SharedVariable, train_y: SharedVariable, test_X, test_y, n_iter=100, batch_size=64) -> SharedVariable:
-    num_samples, num_features = train_X.shape()
-    _, num_cat = train_y.shape()
-
-    model = LRSS(num_features, num_cat)
-    accs = []
-    max_acc = 0
-    for t in range(1, n_iter + 1):
-        print(f"Epoch {t}")
-        for j in trange(0, num_samples, batch_size):
-            batch = min(batch_size, num_samples - j)
-            X = train_X[j:j+batch]
-            y = train_y[j:j+batch]
-
-            y_pred = model.forward(X)
-            model.backward(X, y, y_pred, lr=0.1 / t)
-
-            y_pred = model.predict(test_X)
-            Accracy = accuracy_score(test_y, y_pred)
-            if Accracy > max_acc:
-                max_acc = Accracy
-                print(
-                    f"Iteration {t}, Batch {j//batch_size + 1}, Accuracy: {Accracy:.4f}")
-        accs.append(Accracy)
-
-    plt.plot(accs, label="LR_SS", color="blue")
-    plt.axhline(max_acc, 0, len(accs), label="Max LR_SS",
-                color="blue", linestyle=":")
-
-    train_X = train_X.reveal()
-    train_y = train_y.reveal()
-
-    model = LR(num_features, num_cat, appx_sigmoid=True)
-    accs = []
-    max_acc = 0
-
-    for t in range(1, n_iter + 1):
-        print(f"Epoch {t}")
-        for j in trange(0, num_samples, batch_size):
-            batch = min(batch_size, num_samples - j)
-            X = train_X[j:j+batch]
-            y = train_y[j:j+batch]
-
-            y_pred = model.forward(X)
-            model.backward(X, y, y_pred, lr=0.1 / t)
-
-            y_pred = model.predict(test_X)
-            Accracy = accuracy_score(test_y, y_pred)
-            if Accracy > max_acc:
-                max_acc = Accracy
-        accs.append(Accracy)
-
-    plt.plot(accs, label="LR_without_SS", color="red", linestyle="--")
-    plt.axhline(max_acc, 0, len(accs), label="Max LR_without_SS",
-                color="red", linestyle=":")
-
-    from sklearn.linear_model import LogisticRegression
-    model = LogisticRegression(max_iter=n_iter, penalty=None)
-
-    if num_cat > 1:
-        train_y = train_y.argmax(axis=1)
-
-    model.fit(train_X, train_y.ravel())
-    y_pred = model.predict(test_X)
-    Accracy = accuracy_score(test_y, y_pred)
-    plt.axhline(Accracy, 0, len(accs), label="LR sklearn",
-                color="green", linestyle=":")
-
-    plt.xlabel("nIter")
-    plt.ylabel("Accuracy")
-    plt.legend()
-
-# 早期测试用，可忽略
-
-
-def LR_test(dataset):
-    train_X, train_y, test_X, test_y = load_dataset(dataset)
-
-    train_X = SharedVariable.from_secret(train_X, out_dom)
-    train_y = SharedVariable.from_secret(train_y, out_dom)
-    train(train_X, train_y, test_X, test_y)
-    plt.title(f"LR_{dataset}")
-    plt.savefig(f"LR_{dataset}.png")
-    plt.close()
-
 
 if __name__ == "__main__":
     # LR_test("mnist")

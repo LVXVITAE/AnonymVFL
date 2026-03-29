@@ -12,35 +12,6 @@ out_dom = int(2**16)
 
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-
-class VarOwner:
-    def __init__(self):
-        pass
-
-    def reconstruct(self, x0, x1):
-        assert x0.owner == self and x1.owner == self
-        return (x0 + x1).value
-
-
-class VarCompany(VarOwner):
-    pass
-
-
-class VarPartner(VarOwner):
-    pass
-
-
-def SS_share(x: jnp.ndarray | int | float) -> tuple[jnp.ndarray | int | float, jnp.ndarray | int | float]:
-    '''split x into two additive shares'''
-    if isinstance(x, (int, float)):
-        x = jnp.array(x)
-
-    x_1 = jax.random.randint(jax.random.PRNGKey(
-        0), x.shape, -out_dom // 2, out_dom // 2)
-    x_2 = x - x_1
-    return x_1, x_2
-
-
 def approx_sigmoid(x: jnp.ndarray):
     """
     Compute approximated sigmoid using piecewise function
@@ -277,13 +248,29 @@ def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
         train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
 
     elif dataset == "shop":
-        dir_path = os.path.join("Datasets", "data", "data")
-        guest = pd.read_csv(os.path.join(dir_path, "guest_train.csv"))
-        host = pd.read_csv(os.path.join(dir_path, "host_train.csv"))
-        all = pd.concat([host, guest], join='inner', axis=1)
-        X = all.drop(columns=["id", "Revenue"]).to_numpy()
-        y = all["Revenue"].to_numpy().reshape(-1, 1)
-        train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        company_train_csv = os.path.join(project_dir, "company", "host_train.csv")
+        company_test_csv = os.path.join(project_dir, "company", "host_test.csv")
+        partner_train_csv = os.path.join(project_dir, "partner", "guest_train.csv")
+        partner_test_csv = os.path.join(project_dir, "partner", "guest_test.csv")
+        company_train = pd.read_csv(company_train_csv)
+        company_test = pd.read_csv(company_test_csv)
+        partner_train = pd.read_csv(partner_train_csv)
+        partner_test = pd.read_csv(partner_test_csv)
+
+        # 取交集 (by id)
+        train_merged = pd.merge(company_train, partner_train, on="id", how="inner").sort_values("id")
+        test_merged = pd.merge(company_test, partner_test, on="id", how="inner").sort_values("id")
+
+        # Company features: columns between id and Revenue (exclusive)
+        company_feat_cols = [c for c in company_train.columns if c not in ("id", "Revenue")]
+        partner_feat_cols = [c for c in partner_train.columns if c != "id"]
+        split_col = len(company_feat_cols)
+
+        train_X = train_merged[company_feat_cols + partner_feat_cols].to_numpy(dtype=np.float32)
+        train_y = train_merged["Revenue"].to_numpy(dtype=np.float32).reshape(-1, 1)
+        test_X = test_merged[company_feat_cols + partner_feat_cols].to_numpy(dtype=np.float32)
+        test_y = test_merged["Revenue"].to_numpy(dtype=np.float32).reshape(-1, 1)
 
     return train_X, train_y, test_X, test_y
 
