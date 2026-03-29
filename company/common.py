@@ -147,8 +147,7 @@ class MeanSquare:
         """
         Computes the hessian of the mean square loss.
         """
-        return 2 / y_true.shape[0]
-
+        return (2 / y_true.shape[0]) * jnp.ones_like(y_true)
 
 def to_int_labels(logits: np.ndarray):
     # 将logit转化为整数标签
