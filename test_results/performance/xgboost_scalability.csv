@@ -1,0 +1,6 @@
+模型,样本数量,n_estimators,max_depth,总时间(s)
+SSXGBoost,10000,3,3,276.24
+SSXGBoost,20000,3,3,281.82
+SSXGBoost,30000,3,3,286.98
+SSXGBoost,40000,3,3,291.31
+SSXGBoost,50000,3,3,298.88

@@ -186,7 +186,7 @@ def _gen_psi_data(n_company, n_partner, n_features=20, overlap_ratio=0.5, seed=4
 
 class TestPSIScalability:
 
-    SAMPLE_SIZES = [1000, 5000, 10000, 50000, 100000]
+    SAMPLE_SIZES = [10000, 20000, 30000, 40000, 50000]
 
     @pytest.mark.parametrize("n_samples", SAMPLE_SIZES)
     def test_psi_alignment_time(self, perf_devices, perf_results_dir, n_samples):
@@ -251,7 +251,7 @@ class TestPSIScalability:
 
 class TestSSLRScalability:
 
-    SAMPLE_SIZES = [1000, 5000, 10000, 50000, 100000]
+    SAMPLE_SIZES = [10000, 20000, 30000, 40000, 50000]
 
     @pytest.mark.parametrize("n_samples", SAMPLE_SIZES)
     def test_sslr_training_time(self, perf_devices, perf_results_dir, n_samples):
@@ -328,7 +328,7 @@ class TestBatchSizeImpact:
         partner = perf_devices["partner"]
         spu = perf_devices["spu"]
 
-        n_samples = 5000
+        n_samples = 10000
         X, y = _gen_data(n_samples)
         split_col = 9
 
@@ -381,7 +381,7 @@ class TestBatchSizeImpact:
 
 class TestSSXGBoostScalability:
 
-    SAMPLE_SIZES = [1000, 5000, 10000]
+    SAMPLE_SIZES = [10000, 20000, 30000, 40000, 50000]
 
     @pytest.mark.parametrize("n_samples", SAMPLE_SIZES)
     def test_xgboost_training_time(self, perf_devices, perf_results_dir, n_samples):
@@ -442,38 +442,45 @@ class TestSSXGBoostScalability:
 # TP4: 推理延迟
 # ---------------------------------------------------------------------------
 
-class TestInferenceLatency:
+class TestLRInferenceLatency:
 
-    SAMPLE_SIZES = [100, 500, 1000, 5000, 10000]
+    SAMPLE_SIZES = [10000, 20000, 30000, 40000, 50000]
+    N_FEATURES = 18
+    SPLIT_COL = 9
 
-    @pytest.mark.parametrize("n_samples", SAMPLE_SIZES)
-    def test_sslr_inference_latency(self, perf_devices, perf_results_dir, n_samples):
+    @pytest.fixture(scope="class")
+    def trained_sslr(self, perf_devices):
+        """训练一次 SSLR 模型，供所有推理测试复用"""
         from LR import SSLR
 
         company = perf_devices["company"]
-        partner = perf_devices["partner"]
         spu = perf_devices["spu"]
+        X, y = _gen_data(500, n_features=self.N_FEATURES)
 
-        n_features = 18
-        split_col = 9
-        X, y = _gen_data(n_samples, n_features=n_features)
-
-        # 快速训练
-        train_X = sf.to(company, X[:500].astype(np.float32)).to(spu)
-        train_y = sf.to(company, y[:500].astype(np.float32)).to(spu)
-        test_X = load(
-            {company: sf.to(company, X[:, :split_col].astype(np.float32)),
-             partner: sf.to(partner, X[:, split_col:].astype(np.float32))},
-            partition_way=PartitionWay.VERTICAL,
-        )
+        train_X = sf.to(company, X.astype(np.float32)).to(spu)
+        train_y = sf.to(company, y.astype(np.float32)).to(spu)
 
         model = SSLR(perf_devices, approx=True)
         model.fit(train_X, train_y, n_epochs=1, batch_size=128,
-                  val_steps=99999, lr=0.1, split_col=split_col)
+                  val_steps=99999, lr=0.1, split_col=self.SPLIT_COL)
+        return model
+
+    @pytest.mark.parametrize("n_samples", SAMPLE_SIZES)
+    def test_sslr_inference_latency(self, perf_devices, perf_results_dir,
+                                     trained_sslr, n_samples):
+        company = perf_devices["company"]
+        partner = perf_devices["partner"]
+
+        X, _ = _gen_data(n_samples, n_features=self.N_FEATURES)
+        test_X = load(
+            {company: sf.to(company, X[:, :self.SPLIT_COL].astype(np.float32)),
+             partner: sf.to(partner, X[:, self.SPLIT_COL:].astype(np.float32))},
+            partition_way=PartitionWay.VERTICAL,
+        )
 
         # 推理计时
         t0 = time.time()
-        model.predict(test_X, company)
+        trained_sslr.predict(test_X, company)
         elapsed = time.time() - t0
 
         record = {
@@ -483,20 +490,168 @@ class TestInferenceLatency:
             "单样本平均延迟(ms)": round(elapsed / n_samples * 1000, 4),
         }
 
-        csv_path = os.path.join(perf_results_dir, "inference_latency.csv")
+        csv_path = os.path.join(perf_results_dir, "lr_inference_latency.csv")
         import pandas as pd
         df = pd.DataFrame([record])
         df.to_csv(csv_path, mode="a", header=not os.path.exists(csv_path), index=False)
 
-    def test_inference_latency_plot(self, perf_results_dir):
+    def test_lr_inference_latency_plot(self, perf_results_dir):
         from plot_utils import plot_inference_latency
         import pandas as pd
 
-        csv_path = os.path.join(perf_results_dir, "inference_latency.csv")
+        csv_path = os.path.join(perf_results_dir, "lr_inference_latency.csv")
         if not os.path.exists(csv_path):
             pytest.skip("No inference latency data yet")
 
         records = pd.read_csv(csv_path).to_dict("records")
-        png_path = os.path.join(perf_results_dir, "inference_latency.png")
+        png_path = os.path.join(perf_results_dir, "lr_inference_latency.png")
+        plot_inference_latency(records, png_path)
+        assert os.path.exists(png_path)
+
+
+# ---------------------------------------------------------------------------
+# TP5: 分位点数量 k 对 SSXGBoost 训练时间的影响
+# ---------------------------------------------------------------------------
+
+class TestQuantileImpact:
+
+    K_VALUES = [10, 20, 30, 40, 50]
+
+    @pytest.mark.parametrize("k", K_VALUES)
+    def test_quantile_effect(self, perf_devices, perf_results_dir, k):
+        """记录不同分位点数量 k 下 SSXGBoost 的训练时间"""
+        from XGBoost import SSXGBoost, quantize_buckets, recover_buckets
+
+        company = perf_devices["company"]
+        partner = perf_devices["partner"]
+        spu = perf_devices["spu"]
+
+        n_samples = 10000
+        n_features = 18
+        split_col = 9
+        X, y = _gen_data(n_samples, n_features=n_features)
+
+        Q1, _, bl1 = quantize_buckets(X[:, :split_col], k=k)
+        Q2, _, bl2 = quantize_buckets(X[:, split_col:], k=k)
+        buckets = recover_buckets(np.hstack((bl1, bl2)))
+        FedQuantiles = load(
+            {company: sf.to(company, Q1), partner: sf.to(partner, Q2)},
+            partition_way=PartitionWay.HORIZONTAL,
+        )
+
+        train_X = sf.to(company, X.astype(np.float32)).to(spu)
+        train_y = sf.to(company, y.astype(np.float32))
+
+        model = SSXGBoost(perf_devices, n_estimators=3, max_depth=3)
+
+        t0 = time.time()
+        model.fit(train_X, train_y, buckets, FedQuantiles)
+        elapsed = time.time() - t0
+
+        record = {
+            "分位点数量k": k,
+            "样本数量": n_samples,
+            "n_estimators": 3,
+            "max_depth": 3,
+            "总训练时间(s)": round(elapsed, 2),
+        }
+
+        csv_path = os.path.join(perf_results_dir, "quantile_impact.csv")
+        import pandas as pd
+        df = pd.DataFrame([record])
+        df.to_csv(csv_path, mode="a", header=not os.path.exists(csv_path), index=False)
+
+    def test_quantile_impact_plot(self, perf_results_dir):
+        """读取 CSV 结果并绘图"""
+        from plot_utils import plot_time_vs_samples
+        import pandas as pd
+
+        csv_path = os.path.join(perf_results_dir, "quantile_impact.csv")
+        if not os.path.exists(csv_path):
+            pytest.skip("No quantile impact data yet")
+
+        records = pd.read_csv(csv_path).to_dict("records")
+        png_path = os.path.join(perf_results_dir, "quantile_impact.png")
+        plot_time_vs_samples(records, "分位点数量 k 对 SSXGBoost 训练时间的影响",
+                             png_path, x_key="分位点数量k", y_key="总训练时间(s)")
+        assert os.path.exists(png_path)
+
+
+# ---------------------------------------------------------------------------
+# TP6: SSXGBoost 推理延迟
+# ---------------------------------------------------------------------------
+
+class TestXGBoostInferenceLatency:
+
+    SAMPLE_SIZES = [10000, 20000, 30000, 40000, 50000]
+    N_FEATURES = 18
+    SPLIT_COL = 9
+
+    @pytest.fixture(scope="class")
+    def trained_xgb(self, perf_devices):
+        """训练一次 SSXGBoost 模型，供所有推理测试复用"""
+        from XGBoost import SSXGBoost, quantize_buckets, recover_buckets
+
+        company = perf_devices["company"]
+        partner = perf_devices["partner"]
+        spu = perf_devices["spu"]
+
+        X, y = _gen_data(500, n_features=self.N_FEATURES)
+        Q1, _, bl1 = quantize_buckets(X[:, :self.SPLIT_COL], k=10)
+        Q2, _, bl2 = quantize_buckets(X[:, self.SPLIT_COL:], k=10)
+        buckets = recover_buckets(np.hstack((bl1, bl2)))
+        FedQuantiles = load(
+            {company: sf.to(company, Q1), partner: sf.to(partner, Q2)},
+            partition_way=PartitionWay.HORIZONTAL,
+        )
+
+        train_X = sf.to(company, X.astype(np.float32)).to(spu)
+        train_y = sf.to(company, y.astype(np.float32))
+
+        model = SSXGBoost(perf_devices, n_estimators=3, max_depth=3)
+        model.fit(train_X, train_y, buckets, FedQuantiles)
+        return model
+
+    @pytest.mark.parametrize("n_samples", SAMPLE_SIZES)
+    def test_xgboost_inference_latency(self, perf_devices, perf_results_dir,
+                                        trained_xgb, n_samples):
+        """记录 SSXGBoost 在不同样本量下的推理延迟"""
+        company = perf_devices["company"]
+        partner = perf_devices["partner"]
+
+        X, _ = _gen_data(n_samples, n_features=self.N_FEATURES)
+        test_X = load(
+            {company: sf.to(company, X[:, :self.SPLIT_COL].astype(np.float32)),
+             partner: sf.to(partner, X[:, self.SPLIT_COL:].astype(np.float32))},
+            partition_way=PartitionWay.VERTICAL,
+        )
+
+        t0 = time.time()
+        trained_xgb.predict(test_X, company)
+        elapsed = time.time() - t0
+
+        record = {
+            "模型": "SSXGBoost",
+            "样本数量": n_samples,
+            "推理延迟(s)": round(elapsed, 4),
+            "单样本平均延迟(ms)": round(elapsed / n_samples * 1000, 4),
+        }
+
+        csv_path = os.path.join(perf_results_dir, "xgboost_inference_latency.csv")
+        import pandas as pd
+        df = pd.DataFrame([record])
+        df.to_csv(csv_path, mode="a", header=not os.path.exists(csv_path), index=False)
+
+    def test_xgboost_inference_latency_plot(self, perf_results_dir):
+        """读取 CSV 结果并绘图"""
+        from plot_utils import plot_inference_latency
+        import pandas as pd
+
+        csv_path = os.path.join(perf_results_dir, "xgboost_inference_latency.csv")
+        if not os.path.exists(csv_path):
+            pytest.skip("No XGBoost inference latency data yet")
+
+        records = pd.read_csv(csv_path).to_dict("records")
+        png_path = os.path.join(perf_results_dir, "xgboost_inference_latency.png")
         plot_inference_latency(records, png_path)
         assert os.path.exists(png_path)

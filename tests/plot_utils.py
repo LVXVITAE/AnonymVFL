@@ -45,17 +45,25 @@ def plot_time_vs_samples(records: list[dict], title: str, png_path: str,
 
 
 def plot_batch_size_impact(records: list[dict], png_path: str):
-    """Bar chart: batch size vs training time."""
+    """Line chart: batch size vs training time, one line per sample count."""
     df = pd.DataFrame(records)
     fig, ax = plt.subplots()
-    bars = ax.bar([str(b) for b in df["批次大小"]], df["总训练时间(s)"],
-                  color="#4C72B0", edgecolor="black", linewidth=0.5)
+    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3"]
+    groups = df.groupby("样本数量")
+    for idx, (n_samples, grp) in enumerate(sorted(groups)):
+        grp = grp.sort_values("批次大小")
+        color = colors[idx % len(colors)]
+        ax.plot(grp["批次大小"], grp["总训练时间(s)"],
+                marker="o", color=color, linewidth=2,
+                label=f"样本数={int(n_samples)}")
+        for x, y in zip(grp["批次大小"], grp["总训练时间(s)"]):
+            ax.annotate(f"{y:.1f}", (x, y), textcoords="offset points",
+                        xytext=(0, 8), ha="center", fontsize=9)
     ax.set_xlabel("批次大小")
     ax.set_ylabel("总训练时间 (s)")
     ax.set_title("批次大小对SSLR训练性能的影响")
-    for bar, val in zip(bars, df["总训练时间(s)"]):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                f"{val:.1f}", ha="center", va="bottom", fontsize=10)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     os.makedirs(os.path.dirname(png_path), exist_ok=True)
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
@@ -91,7 +99,7 @@ def plot_inference_latency(records: list[dict], png_path: str):
 def plot_model_comparison(results: list[dict], dataset_name: str, png_path: str):
     """Grouped bar chart: compare methods on Accuracy/Precision/Recall/F1/AUC."""
     df = pd.DataFrame(results)
-    metrics = ["准确率", "精确率", "召回率", "F1分数", "AUC"]
+    metrics = ["准确率", "精确率", "召回率", "F1分数"]
     available = [m for m in metrics if m in df.columns]
     methods = df["方法"].tolist()
 
@@ -99,7 +107,7 @@ def plot_model_comparison(results: list[dict], dataset_name: str, png_path: str)
     width = 0.8 / len(methods)
     colors = plt.cm.Set2.colors
 
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(16, 9))
     for i, method in enumerate(methods):
         row = df[df["方法"] == method].iloc[0]
         vals = [float(row[m]) for m in available]
@@ -108,7 +116,7 @@ def plot_model_comparison(results: list[dict], dataset_name: str, png_path: str)
                       label=method, color=colors[i % len(colors)],
                       edgecolor="black", linewidth=0.5)
         for bar, val in zip(bars, vals):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.003,
                     f"{val:.3f}", ha="center", va="bottom", fontsize=8)
 
     ax.set_xticks(list(x))

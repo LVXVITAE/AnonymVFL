@@ -5,7 +5,7 @@
 - 在公开数据集（Breast Cancer Wisconsin、California Housing）上评估
 - SSLR（近似 / 精确）与 SSXGBoost 的模型效果
 - 与 sklearn LogisticRegression / XGBClassifier / XGBRegressor 基线对比
-- 计算分类指标: 准确率, 精确率, 召回率, F1, AUC
+- 计算分类指标: 准确率, 精确率, 召回率, F1
 - 计算回归指标: 均方误差(MSE), R²分数
 - 输出指标到 CSV, 绘制对比柱状图与训练曲线
 
@@ -118,8 +118,8 @@ def california_housing_data():
 # ---------------------------------------------------------------------------
 
 def _compute_classification_metrics(y_true, y_pred, y_prob=None):
-    """计算分类指标: 准确率, 精确率, 召回率, F1, AUC."""
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+    """计算分类指标: 准确率, 精确率, 召回率, F1."""
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
     y_true_flat = y_true.flatten()
     y_pred_flat = y_pred.flatten()
@@ -130,13 +130,6 @@ def _compute_classification_metrics(y_true, y_pred, y_prob=None):
         "召回率": recall_score(y_true_flat, y_pred_flat, zero_division=0),
         "F1分数": f1_score(y_true_flat, y_pred_flat, zero_division=0),
     }
-    if y_prob is not None:
-        try:
-            metrics["AUC"] = roc_auc_score(y_true_flat, y_prob.flatten())
-        except ValueError:
-            metrics["AUC"] = float("nan")
-    else:
-        metrics["AUC"] = float("nan")
     return metrics
 
 
