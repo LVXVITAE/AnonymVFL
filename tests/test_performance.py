@@ -39,14 +39,12 @@ def _load_distributed_config():
 
 
 def _build_cluster_def(cfg):
-    """从 distributed_config.yaml 构建 SecretFlow cluster_def 和 link_desc.
+    """从 distributed_config.yaml 构建 SecretFlow cluster_def
 
-    Returns (cluster_def, link_desc) — link_desc must be passed as a
-    **separate** keyword argument to ``sf.SPU()``.
+    Returns cluster_def
     """
     a = cfg["machine_a"]
     b = cfg["machine_b"]
-    link_cfg = cfg.get("link_desc", {})
     cluster_def = {
         "nodes": [
             {
@@ -67,12 +65,7 @@ def _build_cluster_def(cfg):
         ],
         "runtime_config": {"protocol": 3, "field": 3},
     }
-    link_desc = {
-        "connect_retry_times": link_cfg.get("connect_retry_times", 60),
-        "connect_retry_interval_ms": link_cfg.get("connect_retry_interval_ms", 2000),
-        "recv_timeout_ms": link_cfg.get("recv_timeout_ms", 300000),
-    }
-    return cluster_def, link_desc
+    return cluster_def
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +97,7 @@ def distributed_env():
     except Exception:
         pass
 
-    cluster_def, link_desc = _build_cluster_def(cfg)
+    cluster_def = _build_cluster_def(cfg)
     ray_addr = f"{cfg['machine_a']['ip']}:{cfg['machine_a']['ray_port']}"
 
     # Ensure Ray workers can import company/ modules.
@@ -115,7 +108,6 @@ def distributed_env():
         mode='multi_distributed',
         ray_head_addr=ray_addr,
         cluster_def=cluster_def,
-        link_desc=link_desc,
         runtime_env=runtime_env,
     )
 

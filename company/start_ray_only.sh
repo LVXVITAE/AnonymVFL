@@ -13,8 +13,11 @@ echo "正在启动Ray集群..."
 ray start --head --node-ip-address "${A_IP}" --port "${PORT_RAY}" \
   --num-cpus 16 \
   --resources='{"company": 10, "coordinator": 10}' \
-  --object-store-memory=2000000000
-
+  --object-store-memory=2000000000 \
+  --object-manager-port=20002 \
+  --node-manager-port=20003 \
+  --min-worker-port=10060 \
+  --max-worker-port=10160 
 echo "✅ Ray head启动成功"
 echo "📍 Ray集群地址: ${A_IP}:${PORT_RAY}"
 

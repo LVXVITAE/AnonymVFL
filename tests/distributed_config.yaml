@@ -30,8 +30,3 @@ ray:
   num_cpus: 16                      # 每个节点的 CPU 数量
   object_store_memory: 2000000000  # 2 GB object store
 
-# SPU BRPC 链路配置 — 跨机 mesh 建链时的重试与超时参数
-link_desc:
-  connect_retry_times: 60           # 建链重试次数
-  connect_retry_interval_ms: 2000   # 每次重试间隔 (ms)
-  recv_timeout_ms: 300000           # 接收超时 (ms), 5 分钟

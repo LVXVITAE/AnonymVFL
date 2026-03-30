@@ -3,11 +3,11 @@ set -euo pipefail
 
 # === A = company + coordinator (head 节点) ===
 A_IP="192.168.1.23"
-B_IP="192.168.1.12"   # 同机模拟时也用 127.0.0.1 或本机 IP
+B_IP="192.168.1.3"   # 同机模拟时也用 127.0.0.1 或本机 IP
 PORT_RAY="20001"
-PORT_COMPANY_SPU="11001"
-PORT_PARTNER_SPU="11002"
-PORT_COORD_SPU="11003"
+PORT_COMPANY_SPU="9394"
+PORT_PARTNER_SPU="9395"
+PORT_COORD_SPU="9396"
 
 cd "$(dirname "$0")"
 COM_PATH="."
@@ -16,10 +16,13 @@ PAR_PATH="../partner"
 # 1) 启动 Ray head（只打 company/coordinator 资源）
 # ray stop || true
 ray start --head --node-ip-address "${A_IP}" --port "${PORT_RAY}" \
-  --num-cpus 8 \
+  --num-cpus 16 \
   --resources='{"company": 10, "coordinator": 10}' \
-  --object-store-memory=2000000000
-
+  --object-store-memory=2000000000 \
+  --object-manager-port=20002 \
+  --node-manager-port=20003 \
+  --min-worker-port=10060 \
+  --max-worker-port=10160
 # 2) 启动任务
 python3 truerun.py \
   --mode="multi_distributed" \

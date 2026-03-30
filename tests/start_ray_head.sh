@@ -67,7 +67,6 @@ ray start --head \
     --num-cpus="${NUM_CPUS}" \
     --resources="{\"company\": ${COMPANY_RES}, \"coordinator\": ${COORD_RES}}" \
     --object-store-memory="${OBJ_STORE}" \
-    --system-config='{"max_direct_call_object_size": 104857600, "task_rpc_inlined_bytes_limit": 104857600}' \
     ${PORT_ARGS}
 
 echo "[2/3] 等待 GCS 服务就绪..."

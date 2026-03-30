@@ -17,7 +17,11 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 开始启动Ray集群" | tee -a "$LOG_
 ray start --head --node-ip-address "${A_IP}" --port "${PORT_RAY}" \
   --num-cpus 8 \
   --resources='{"company": 10, "coordinator": 10}' \
-  --object-store-memory=2000000000 2>&1 | while IFS= read -r line; do
+  --object-store-memory=2000000000 \
+  --object-manager-port=20002 \
+  --node-manager-port=20003 \
+  --min-worker-port=10060 \
+  --max-worker-port=10160 2>&1 | while IFS= read -r line; do
     echo "$(date '+%Y-%m-%d %H:%M:%S') [Company] $line" | tee -a "$LOG_FILE"
 done
 

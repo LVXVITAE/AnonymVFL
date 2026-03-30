@@ -61,7 +61,12 @@ def main(args: argparse.Namespace):
             'protocol': 3,
             'field': 3
         }
-    mpc_init = MPCInitializer(args.mode, args.ray_head_addr, cluster_def)
+
+    # Ensure Ray workers can import company/ modules (e.g. LR, PSI, XGBoost).
+    company_dir = os.path.dirname(os.path.abspath(__file__))
+    runtime_env = {"env_vars": {"PYTHONPATH": company_dir}}
+
+    mpc_init = MPCInitializer(args.mode, args.ray_head_addr, cluster_def, runtime_env=runtime_env)
     company, partner, coordinator = mpc_init.company, mpc_init.partner, mpc_init.coordinator
     spu = mpc_init.spu
 
