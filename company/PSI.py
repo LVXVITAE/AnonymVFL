@@ -8,6 +8,51 @@ import secretflow as sf
 from secretflow.device import PYUObject, HEUObject
 from secretflow import HEU, PYU
 
+
+def unpack_data(data: tuple):
+    """解包PSI输入数据为 (keys, private_features, public_features)"""
+    keys, private_features, public_features = data
+    return keys, private_features, public_features
+
+
+def repermute_data(U_0, U_1, U_2):
+    """对keys、私有特征和公开特征进行随机排列"""
+    pem = np.random.permutation(len(U_0)).tolist()
+    U_0 = [U_0[i] for i in pem]
+    U_1 = U_1[pem]
+    if U_2 is not None:
+        U_2 = U_2[pem]
+    return U_0, U_1, U_2
+
+
+def hash_mul_keys(keys, k):
+    """对keys进行哈希并用标量k乘以Ristretto255点"""
+    keys = [crypto_core_ristretto255_from_hash(sha512(key.encode()).digest()) for key in keys]
+    return [crypto_scalarmult_ristretto255(k, key) for key in keys]
+
+
+def scalar_mul_points(points, k):
+    """用标量k乘以一组Ristretto255点"""
+    return [crypto_scalarmult_ristretto255(k, p) for p in points]
+
+
+def intersection_indices(E_c_0, E_p_0):
+    """比较二次乘方后的哈希值求交集"""
+    company_hash = pd.DataFrame([(ec0, i) for i, ec0 in enumerate(E_c_0)], columns=['hash', 'i'])
+    partner_hash = pd.DataFrame([(ep0, j) for j, ep0 in enumerate(E_p_0)], columns=['hash', 'j'])
+    intersection = pd.merge(company_hash, partner_hash, how='inner', on='hash')
+    return intersection
+
+
+def repermute_with_pem(E_c_0, E_c_2, r_c, n):
+    """对Company数据进行随机排列（Partner侧），同时返回排列索引"""
+    pem = np.random.permutation(n).tolist()
+    E_c_0 = [E_c_0[i] for i in pem]
+    if E_c_2 is not None:
+        E_c_2 = E_c_2[pem]
+    r_c = r_c[pem]
+    return E_c_0, E_c_2, r_c, pem
+
 class PSIWorker:
     """
     PSIWorker是PSICompany和PSIPartner的基类，提供了数据集读取和对本方持有数据进行加密的功能。
@@ -20,10 +65,7 @@ class PSIWorker:
          - public_features: 参与方持有的公开特征数据，默认为None。这个参数是预留给XGBoost分桶标签使用。
         """
         self.device = data.device
-        def unpack(data : tuple[list[str], np.ndarray, np.ndarray | None]):
-            keys, private_features, public_features = data
-            return keys, private_features, public_features
-        self.keys, self.private_features, self.public_features = self.device(unpack, num_returns=3)(data)
+        self.keys, self.private_features, self.public_features = self.device(unpack_data, num_returns=3)(data)
         self.k = self.device(crypto_core_ristretto255_scalar_random)()
         self.data_shape = sf.reveal(self.device(np.shape)(self.private_features))
         self.company_heu, self.partner_heu = heu_devices
@@ -38,18 +80,8 @@ class PSIWorker:
          - U_2: 公开特征（如果存在）
         """
         U_0, U_1, U_2 = self.keys, self.private_features, self.public_features
-        def repermute(U_0, U_1, U_2):
-            pem = np.random.permutation(len(U_0)).tolist()
-            U_0 = [U_0[i] for i in pem]
-            U_1 = U_1[pem]
-            if U_2 is not None:
-                U_2 = U_2[pem]
-            return U_0, U_1, U_2
-        U_0, U_1, U_2 = self.device(repermute,num_returns=3)(U_0, U_1, U_2)
+        U_0, U_1, U_2 = self.device(repermute_data, num_returns=3)(U_0, U_1, U_2)
 
-        def hash_mul_keys(keys, k):
-            keys = [crypto_core_ristretto255_from_hash(sha512(key.encode()).digest()) for key in keys]
-            return [crypto_scalarmult_ristretto255(k, key) for key in keys]
         U_0 = self.device(hash_mul_keys)(U_0, self.k)
         # 对U_0, U_1, U_2进行随机排列
         return (U_0, U_1, U_2)
@@ -79,20 +111,10 @@ class PSICompany(PSIWorker):
         U_p_0, U_p_1, U_p_2 = U_p
 
         # 计算Partner二次乘方后的哈希值
-        def mul_k(U_p_0, k):
-            return [crypto_scalarmult_ristretto255(k,u_p_0_i) for u_p_0_i in U_p_0]
-        E_p_0 = self.device(mul_k)(U_p_0, self.k)
+        E_p_0 = self.device(scalar_mul_points)(U_p_0, self.k)
         E_p_1, E_p_2 = U_p_1, U_p_2
 
         E_c_0, E_c_1, E_c_2 = E_c
-
-        def intersection_indices(E_c_0, E_p_0):
-            '''比较二次乘方后的哈希值求交集'''
-            # 此处可考虑针对非平衡数据集场景进行优化
-            company_hash = pd.DataFrame([(ec0, i) for i, ec0 in enumerate(E_c_0)],columns=['hash','i'])
-            partner_hash = pd.DataFrame([(ep0, j) for j, ep0 in enumerate(E_p_0)],columns=['hash','j'])
-            intersection = pd.merge(company_hash,partner_hash,how='inner',on='hash')
-            return intersection
 
         intersection = self.device(intersection_indices)(E_c_0, E_p_0)
         intersection = sf.reveal(intersection)
@@ -141,22 +163,13 @@ class PSIPartner(PSIWorker):
 
         print("Computing masked company cipher")
         # 计算Company二次乘方后的哈希值
-        def mul_k(U_c_0, k):
-            return [crypto_scalarmult_ristretto255(k,u_c_0_i) for u_c_0_i in U_c_0]
-        E_c_0 = self.device(mul_k)(U_c_0, self.k)
+        E_c_0 = self.device(scalar_mul_points)(U_c_0, self.k)
         r_c_enc = self.r_c.to(self.company_heu).encrypt()
         # homo sub
         E_c_1 = U_c_1 - r_c_enc
         E_c_2 = U_c_2
       
-        def repermute(E_c_0, E_c_2, r_c):
-            pem = np.random.permutation(company_data_shape[0]).tolist()
-            E_c_0 = [E_c_0[i] for i in pem]
-            if E_c_2 is not None:
-                E_c_2 = E_c_2[pem]
-            r_c = r_c[pem]
-            return E_c_0, E_c_2, r_c, pem
-        E_c_0, E_c_2, self.r_c, pem = self.device(repermute,num_returns=4)(E_c_0, E_c_2, self.r_c)
+        E_c_0, E_c_2, self.r_c, pem = self.device(repermute_with_pem, num_returns=4)(E_c_0, E_c_2, self.r_c, company_data_shape[0])
 
         E_c_1 = E_c_1[pem]
         return (E_c_0.to(self.company), E_c_1, E_c_2.to(self.company)), (U_p_0.to(self.company), U_p_1.to(self.partner_heu).encrypt(), U_p_2.to(self.company)), self.data_shape
@@ -198,60 +211,3 @@ def private_set_intersection(company_data : PYUObject, partner_data : PYUObject,
     L, R_cI, buckets_labels = psi_company.compute_intersection(E_c, U_p, partner_data_shape)
     R_pI = psi_partner.output_shares(L)
     return R_cI, R_pI, buckets_labels
-
-# 下面的代码是生成随机数据集测试PSI性能，直接运行本文件即可
-def generate_random_data(num_records, num_features):
-    import random,string
-
-    keys = [''.join(random.choices(string.ascii_uppercase +
-                             string.digits, k=20)) for _ in range(num_records)]
-    keys = pd.DataFrame(keys)
-    data = pd.DataFrame(100*np.random.rand(num_records,num_features))
-    data = pd.concat([keys,data],axis=1)
-    data.columns = range(data.shape[1])
-    return data
-
-def test_PSI(company_data : pd.DataFrame, partner_data : pd.DataFrame):
-    t1 = time()
-    from common import MPCInitializer
-    mpc_init = MPCInitializer()
-    company, partner = mpc_init.company, mpc_init.partner
-    heu_devices = (mpc_init.company_heu, mpc_init.partner_heu)
-    company_data = (company_data.iloc[:,0].to_list(),company_data.iloc[:,1:].to_numpy(dtype=np.float32), None)
-    company_data = sf.to(company,company_data)
-    partner_data = (partner_data.iloc[:,0].to_list(),partner_data.iloc[:,1:].to_numpy(dtype=np.float32), None)
-    partner_data = sf.to(partner, partner_data)
-    R_cI, R_pI, bucket_labels = private_set_intersection(company_data, partner_data, heu_devices)
-    print("PSI time taken: ",time()-t1)
-    R_cI = sf.reveal(R_cI)
-    R_pI = sf.reveal(R_pI)
-    R_I = R_cI + R_pI
-    print(R_I)
-
-def random_PSI_test():
-    import os
-    if not os.path.exists("Datasets/PSI"):
-        os.makedirs("Datasets/PSI")
-        intersection = generate_random_data(5,5)
-        intersection_left = intersection.iloc[:,:3]
-        intersection_right = intersection.iloc[:,3:]
-        intersection_right = pd.concat([intersection.iloc[:,0],intersection_right],axis=1)
-        company_data = generate_random_data(10,2)
-        company_data = pd.concat([company_data,intersection_left],axis=0).sample(frac=1)
-        partner_data = generate_random_data(5,3)
-        partner_data.columns = intersection_right.columns
-        partner_data = pd.concat([partner_data,intersection_right],axis=0).sample(frac=1)
-        intersection = pd.merge(company_data,partner_data,how='inner',on=0)
-        company_data.to_csv("Datasets/PSI/company_data.csv",index=False)
-        partner_data.to_csv("Datasets/PSI/partner_data.csv",index=False)
-        intersection.to_csv("Datasets/PSI/intersection.csv",index=False)
-    else:
-        company_data = pd.read_csv("Datasets/PSI/company_data.csv")
-        partner_data = pd.read_csv("Datasets/PSI/partner_data.csv")
-        intersection = pd.read_csv("Datasets/PSI/intersection.csv")
-    intersection = intersection.iloc[:,1:].to_numpy()
-    print(intersection)
-    test_PSI(company_data, partner_data)
-
-if __name__ == "__main__":
-    random_PSI_test()

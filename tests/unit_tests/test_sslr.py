@@ -7,11 +7,23 @@
 """
 import os
 import tempfile
+import json
 import pytest
 import numpy as np
 import secretflow as sf
 from secretflow.data import FedNdarray
 from secretflow.data.ndarray import load, PartitionWay
+from LR import (
+    spu_matmul,
+    spu_get_item,
+    compute_gradient,
+    grad_desc,
+    to_int_labels_with_threshold,
+    xw_product,
+    xw_sum_activate,
+    lr_save_model,
+    lr_load_model,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -199,3 +211,156 @@ class TestSSLRPersistence:
             y_orig = sf.reveal(model.predict(test_X, devices["company"]))
             y_loaded = sf.reveal(loaded.predict(test_X, devices["company"]))
             np.testing.assert_array_equal(y_orig, y_loaded)
+
+
+# ---------------------------------------------------------------------------
+# 单元测试 — LR.py 提取的模块级函数
+# ---------------------------------------------------------------------------
+
+class TestSpuMatmul:
+    pytestmark = pytest.mark.unit
+
+    def test_basic(self):
+        X = np.array([[1.0, 2.0], [3.0, 4.0]])
+        w = np.array([[0.5], [0.5]])
+        result = spu_matmul(X, w)
+        np.testing.assert_array_almost_equal(result, [[1.5], [3.5]])
+
+    def test_identity(self):
+        X = np.eye(3)
+        w = np.array([[1.0], [2.0], [3.0]])
+        result = spu_matmul(X, w)
+        np.testing.assert_array_almost_equal(result, w)
+
+
+class TestSpuGetItem:
+    pytestmark = pytest.mark.unit
+
+    def test_basic_indexing(self):
+        arr = np.array([[1, 2], [3, 4], [5, 6]])
+        keys = np.array([0, 2])
+        result = spu_get_item(arr, keys)
+        np.testing.assert_array_equal(result, [[1, 2], [5, 6]])
+
+    def test_single_index(self):
+        arr = np.array([10, 20, 30])
+        result = spu_get_item(arr, np.array([1]))
+        np.testing.assert_array_equal(result, [20])
+
+
+class TestComputeGradient:
+    pytestmark = pytest.mark.unit
+
+    def test_basic(self):
+        y_pred = np.array([0.8, 0.2, 0.6])
+        y = np.array([1.0, 0.0, 1.0])
+        result = compute_gradient(y_pred, y)
+        np.testing.assert_array_almost_equal(result, [-0.2, 0.2, -0.4])
+
+    def test_zero_gradient(self):
+        y = np.array([0.5, 0.5])
+        result = compute_gradient(y, y)
+        np.testing.assert_array_almost_equal(result, [0.0, 0.0])
+
+
+class TestGradDesc:
+    pytestmark = pytest.mark.unit
+
+    def test_no_regularization(self):
+        """lambda=0时不进行权重衰减"""
+        w = np.array([[1.0], [1.0]])
+        X = np.array([[1.0, 0.0], [0.0, 1.0]])
+        grad = np.array([[0.1], [0.2]])
+        lr = 1.0
+        result = grad_desc(0.0, w, X, grad, lr)
+        np.testing.assert_array_almost_equal(result, [[0.95], [0.9]])
+
+    def test_with_regularization(self):
+        """lambda>0时进行L2权重衰减"""
+        w = np.array([[2.0]])
+        X = np.array([[1.0]])
+        grad = np.array([[0.0]])
+        lr = 0.1
+        result = grad_desc(0.1, w, X, grad, lr)
+        np.testing.assert_array_almost_equal(result, [[1.8]])
+
+
+class TestToIntLabelsWithThreshold:
+    pytestmark = pytest.mark.unit
+
+    def test_binary_default_threshold(self):
+        logits = np.array([[0.3], [0.7], [0.5], [0.9]])
+        result = to_int_labels_with_threshold(logits, 0.5)
+        np.testing.assert_array_equal(result, [[0], [1], [0], [1]])
+
+    def test_binary_custom_threshold(self):
+        logits = np.array([[0.3], [0.4], [0.5]])
+        result = to_int_labels_with_threshold(logits, 0.35)
+        np.testing.assert_array_equal(result, [[0], [1], [1]])
+
+    def test_multiclass(self):
+        logits = np.array([[0.1, 0.8, 0.1], [0.7, 0.2, 0.1]])
+        result = to_int_labels_with_threshold(logits, 0.5)
+        np.testing.assert_array_equal(result, [1, 0])
+
+
+class TestXwProduct:
+    pytestmark = pytest.mark.unit
+
+    def test_basic(self):
+        X = np.array([[1.0, 2.0]])
+        w = np.array([[3.0], [4.0]])
+        result = xw_product(X, w)
+        np.testing.assert_array_almost_equal(result, [[11.0]])
+
+
+class TestXwSumActivate:
+    pytestmark = pytest.mark.unit
+
+    def test_identity_activation(self):
+        a = np.array([1.0, 2.0])
+        b = np.array([3.0, 4.0])
+        result = xw_sum_activate(a, b, lambda x: x)
+        np.testing.assert_array_almost_equal(result, [4.0, 6.0])
+
+    def test_relu_activation(self):
+        a = np.array([-1.0, 2.0])
+        b = np.array([-3.0, 1.0])
+        result = xw_sum_activate(a, b, lambda x: np.maximum(0, x))
+        np.testing.assert_array_almost_equal(result, [0.0, 3.0])
+
+
+class TestLrSaveLoadModel:
+    pytestmark = pytest.mark.unit
+
+    def test_save_load_npy(self, tmp_path):
+        """保存和加载npy格式模型"""
+        w = np.array([[1.0, 2.0], [3.0, 4.0]])
+        info = {'shape': [2,2], 'lambda_': 0.01, 'approx': True, 'save_as': 'npy'}
+        path = str(tmp_path / "model")
+        lr_save_model(w, path, 'npy', info)
+        assert os.path.exists(os.path.join(path, 'weight.npy'))
+        assert os.path.exists(os.path.join(path, 'info.json'))
+
+        w_loaded, info_loaded = lr_load_model(path)
+        np.testing.assert_array_almost_equal(w_loaded, w)
+        assert info_loaded == info
+
+    def test_save_load_csv(self, tmp_path):
+        """保存和加载csv格式模型"""
+        w = np.array([[1.5], [2.5]])
+        info = {'shape': [2, 1], 'lambda_': 0.0, 'approx': False, 'save_as': 'csv'}
+        path = str(tmp_path / "model_csv")
+        lr_save_model(w, path, 'csv', info)
+        assert os.path.exists(os.path.join(path, 'weight.csv'))
+
+        w_loaded, info_loaded = lr_load_model(path)
+        np.testing.assert_array_almost_equal(w_loaded, w)
+
+    def test_creates_directory(self, tmp_path):
+        """自动创建不存在的目录"""
+        path = str(tmp_path / "deep" / "nested" / "dir")
+        w = np.array([[1.0]])
+        info = {'save_as': 'npy'}
+        lr_save_model(w, path, 'npy', info)
+        assert os.path.isdir(path)

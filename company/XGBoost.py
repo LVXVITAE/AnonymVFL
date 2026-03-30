@@ -1,4 +1,3 @@
-from time import time
 import os
 import json
 # 导入dill序列化库，用于保存和加载Python对象
@@ -18,6 +17,178 @@ from secretflow.data import FedNdarray
 from secretflow.data.ndarray import load, PartitionWay
 from tqdm.contrib import tzip
 from tqdm import tqdm
+
+
+# ========= 从闭包中提取的模块级纯函数 =========
+
+def generate_indicator(X: jnp.ndarray) -> jnp.ndarray:
+    """生成全1指示向量的函数，表示所有样本都属于当前节点"""
+    return jnp.ones((X.shape[0], 1), dtype=int)
+
+
+def leaf_weight_div(g_sum: jnp.ndarray, h_sum: jnp.ndarray, lambda_: float) -> jnp.ndarray:
+    """计算叶子权重的函数，使用除法公式"""
+    return -g_sum / (h_sum + lambda_)
+
+
+def update_pred(pred: jnp.ndarray, weight: jnp.ndarray, s: jnp.ndarray):
+    """新增一个叶节点自动更新预测值"""
+    return pred + weight * s
+
+
+def gh_sum(g: jnp.ndarray, h: jnp.ndarray) -> tuple:
+    """本节点一阶二阶梯度之和"""
+    g_sum = jnp.sum(g)
+    h_sum = jnp.sum(h)
+    return g_sum, h_sum
+
+
+def loss_fraction(g_sum: jnp.ndarray, h_sum: jnp.ndarray, lambda_: float) -> tuple:
+    """计算当前节点的目标损失的分子G^2和分母H + lambda"""
+    loss_n = g_sum * g_sum
+    loss_d = h_sum + lambda_
+    return loss_n, loss_d
+
+
+def split_info(g_L: jnp.ndarray, h_L: jnp.ndarray, g_k: jnp.ndarray, h_k: jnp.ndarray, g_sum: jnp.ndarray, h_sum: jnp.ndarray, lambda_: float):
+    """计算分裂信息"""
+    g_L += g_k
+    h_L += h_k
+    g_R = g_sum - g_L
+    h_R = h_sum - h_L
+    return g_L, h_L, g_R, h_R, g_L * g_L, h_L + lambda_, g_R * g_R, h_R + lambda_
+
+
+def subtree_args(g: jnp.ndarray, h: jnp.ndarray, s: jnp.ndarray, s_L: jnp.ndarray, s_R: jnp.ndarray) -> tuple:
+    """计算左子树和右子树的一阶二阶梯度以及指示向量"""
+    s_L *= s
+    s_R *= s
+    g_L = g * s_L
+    h_L = h * s_L
+    g_R = g * s_R
+    h_R = h * s_R
+    return g_L, h_L, s_L, g_R, h_R, s_R
+
+
+def compute_gain(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> jnp.ndarray:
+    """计算增益"""
+    return (1/2) * ((g_L / h_L) + (g_R / h_R) - (loss_n / loss_d)) - gamma
+
+
+def argmax_gain(G_L: jnp.ndarray, G_R: jnp.ndarray, H_L: jnp.ndarray, H_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> tuple:
+    """计算增益最大值"""
+    G_L = jnp.array(G_L)
+    G_R = jnp.array(G_R)
+    H_L = jnp.array(H_L)
+    H_R = jnp.array(H_R)
+    gain_ = compute_gain(G_L, G_R, H_L, H_R, loss_n, loss_d, gamma)
+    i = jnp.argmax(gain_)
+    return i, gain_.flatten()[i] > 0
+
+
+def leq_compare(g_L1, g_R1, h_L1, h_R1, g_L2, g_R2, h_L2, h_R2) -> jnp.ndarray:
+    """比较两个分裂点的增益大小"""
+    g_L1 = jnp.array(g_L1, dtype=float)
+    g_R1 = jnp.array(g_R1, dtype=float)
+    g_L2 = jnp.array(g_L2, dtype=float)
+    g_R2 = jnp.array(g_R2, dtype=float)
+    h_L1 = jnp.array(h_L1, dtype=float)
+    h_R1 = jnp.array(h_R1, dtype=float)
+    h_L2 = jnp.array(h_L2, dtype=float)
+    h_R2 = jnp.array(h_R2, dtype=float)
+    h_L12 = h_L1 * h_L2
+    h_R12 = h_R1 * h_R2
+    nom = h_R12 * (g_L1 * h_L2 - g_L2 * h_L1) + \
+        h_L12 * (g_R1 * h_R2 - g_R2 * h_R1)
+    denom = h_L12 * h_R12
+    return (nom > 0) ^ (denom > 0)
+
+
+def max_gain_sign(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> jnp.ndarray:
+    """计算增益最大分裂点的正负"""
+    h_LR = h_L * h_R
+    denom = 2 * h_LR * loss_d
+    nom = (g_L * h_R + h_L * g_R - 2 * gamma * h_LR) * \
+        loss_d - h_LR * loss_n
+    return ~ (nom > 0) ^ (denom > 0)
+
+
+def bucket_sum(g: jnp.ndarray, h: jnp.ndarray, bucket: jnp.ndarray) -> tuple:
+    """计算桶内一、二阶梯度之和"""
+    g_sum = jnp.sum(g[bucket])
+    h_sum = jnp.sum(h[bucket])
+    return g_sum, h_sum
+
+
+def tree_leq(X: jnp.ndarray, j: int, k: int, Quantiles: jnp.ndarray) -> jnp.ndarray:
+    """判断X[:, j]是否小于等于Quantiles[j, k]"""
+    return X[:, j] <= Quantiles[j, k]
+
+
+def add_preds(x, y):
+    """累加两个预测值"""
+    return x + y
+
+
+def select_leaf_weight(w, leaf_id):
+    """根据叶子索引获取预测值"""
+    return w[leaf_id].reshape(-1, 1)
+
+
+def to_np_array(x):
+    """转换为numpy数组"""
+    return np.array(x)
+
+
+def xgb_save_model(quantiles: np.ndarray, path: str, save_ext: str, model_info: dict, tree_roots: list):
+    """保存XGBoost模型结构"""
+    try:
+        os.makedirs(path, exist_ok=True)
+        print(f"Directory '{path}' created or already exists.")
+    except OSError as e:
+        print(f"Error creating directory '{path}': {e}")
+    if save_ext == 'npy':
+        np.save(os.path.join(path, 'quantiles.npy'), quantiles)
+    elif save_ext == 'csv':
+        np.savetxt(os.path.join(path, 'quantiles.csv'), quantiles, delimiter=',')
+    json.dump(model_info, open(os.path.join(path, 'info.json'), 'w'))
+    with open(os.path.join(path, 'tree.pkl'), 'wb') as f:
+        dill.dump(tree_roots, f)
+
+
+def xgb_save_weights(weights, save_ext: str, path: str):
+    """保存权重"""
+    if save_ext == 'npy':
+        np.save(os.path.join(path, 'weight.npy'), weights, allow_pickle=True)
+    elif save_ext == 'csv':
+        np.savetxt(os.path.join(path, 'weight.csv'), weights, delimiter=',')
+
+
+def xgb_load_model(path: str):
+    """加载XGBoost模型"""
+    info = json.load(open(os.path.join(path, 'info.json'), 'r'))
+    save_ext = info['save_as']
+    if save_ext == 'csv':
+        quantiles = np.loadtxt(os.path.join(path, 'quantiles.csv'), delimiter=',', ndmin=2)
+    else:
+        quantiles = np.load(os.path.join(path, 'quantiles.npy'))
+    with open(os.path.join(path, 'tree.pkl'), 'rb') as f:
+        trees = dill.load(f)
+    return trees, quantiles, info
+
+
+def xgb_load_weights(path: str, save_ext: str):
+    """加载权重"""
+    if save_ext == 'csv':
+        weights = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',', ndmin=2)
+    else:
+        weights = np.load(os.path.join(path, 'weight.npy'))
+    return weights
+
+
+def select_weight_by_idx(x, idx):
+    """按索引选取权重"""
+    return x[idx]
 
 
 class TreeNode:
@@ -109,9 +280,6 @@ class Tree(SSML):
         self.out_features = int(self.out_features)
         # 生成指示向量。指示向量是一个01向量，1表示该数据属于本树节点
 
-        def generate_indicator(X: jnp.ndarray) -> jnp.ndarray:
-            '''生成全1指示向量的函数，表示所有样本都属于当前节点'''
-            return jnp.ones((X.shape[0], 1), dtype=int)
         # 在SPU上生成初始指示向量
         s = self.spu(generate_indicator)(X)
         # 根据任务类型选择损失函数
@@ -140,16 +308,8 @@ class Tree(SSML):
         # 构建决策树
         self.root = self._build_tree(g, h, s, 0)
         # 将叶子权重列表转换为NumPy数组
-        self.leaf_weights = self.train_label_keeper(lambda x: np.array(x))(self.leaf_weights)
+        self.leaf_weights = self.train_label_keeper(to_np_array)(self.leaf_weights)
         return
-
-    def __reveal_list(self, arr: list):
-        '''DEBUG ONLY'''
-        def to_jnp(arr: list):
-            arr = jnp.array(arr)
-            return arr
-        arr = self.spu(to_jnp)(arr)
-        return sf.reveal(arr)
 
     def _leaf(self, g_sum: SPUObject, h_sum: SPUObject, s: SPUObject) -> Leaf:
         """
@@ -165,9 +325,6 @@ class Tree(SSML):
         g_sum = g_sum.to(self.train_label_keeper)
         h_sum = h_sum.to(self.train_label_keeper)
         s = s.to(self.train_label_keeper)
-        def leaf_weight_div(g_sum: jnp.ndarray, h_sum: jnp.ndarray, lambda_: float) -> jnp.ndarray:
-            '''计算叶子权重的函数，使用除法公式'''
-            return -g_sum / (h_sum + lambda_)
         # 在标签持有方计算叶子权重
         weight = self.train_label_keeper(leaf_weight_div)(g_sum, h_sum, self.lambda_)
         # else:
@@ -186,9 +343,6 @@ class Tree(SSML):
         # 在叶子权重列表中添加新叶子权重
         self.leaf_weights.append(weight)
 
-        def update_pred(pred: jnp.ndarray, weight: jnp.ndarray, s: jnp.ndarray):
-            '''新增一个叶节点自动更新预测值'''
-            return pred + weight * s
         # 更新训练预测值
         self.train_pred = self.train_label_keeper(update_pred)(self.train_pred, weight, s)
         # 返回新创建的叶子节点
@@ -203,14 +357,6 @@ class Tree(SSML):
         - s: 本子树节点的指示向量，类型为SPUObject。本节点数据在指示向量中用1表示，非本节点的数据用0表示。
         - depth: 当前树的深度，类型为int
         """
-        def gh_sum(g: jnp.ndarray, h: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-            """
-            本节点一阶二阶梯度之和
-            """
-            g_sum = jnp.sum(g)
-            h_sum = jnp.sum(h)
-            return g_sum, h_sum
-
         # 在SPU上计算梯度总和
         g_sum, h_sum = self.spu(
             gh_sum, num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER, user_specified_num_returns=2)(g, h)
@@ -218,12 +364,6 @@ class Tree(SSML):
         # 如果达到最大深度，创建叶子节点
         if depth >= self.max_depth:
             return self._leaf(g_sum, h_sum, s)
-
-        def loss_fraction(g_sum: jnp.ndarray, h_sum: jnp.ndarray, lambda_: float) -> tuple[jnp.ndarray, jnp.ndarray]:
-            """ 计算当前节点的目标损失的分子G^2和分母H + lambda"""
-            loss_n = g_sum * g_sum
-            loss_d = h_sum + lambda_
-            return loss_n, loss_d
 
         # 在SPU上计算损失分子和分母
         loss_n, loss_d = self.spu(loss_fraction, num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER,
@@ -235,14 +375,6 @@ class Tree(SSML):
         # 计算每个分裂点左右的一阶二阶梯度和
         print("Calculating gradient split info...")
         G_L, G_R, H_L, H_R = [], [], [], []
-
-        def split_info(g_L: jnp.ndarray, h_L: jnp.ndarray, g_k: jnp.ndarray, h_k: jnp.ndarray, g_sum: jnp.ndarray, h_sum: jnp.ndarray, lambda_: float):
-            '''计算分裂信息'''
-            g_L += g_k
-            h_L += h_k
-            g_R = g_sum - g_L
-            h_R = h_sum - h_L
-            return g_L, h_L, g_R, h_R, g_L * g_L, h_L + lambda_, g_R * g_R, h_R + lambda_
 
         # 遍历每个特征的桶
         for G_j, H_j in tzip(G, H):
@@ -291,20 +423,6 @@ class Tree(SSML):
                 s_L = sf.to(self.company, s_L).to(self.spu)
                 s_R = sf.to(self.company, s_R).to(self.spu)
 
-            def subtree_args(g: jnp.ndarray, h: jnp.ndarray, s: jnp.ndarray, s_L: jnp.ndarray, s_R: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-                """
-                计算左子树和右子树的一阶二阶梯度以及指示向量
-                """
-                # 将指示向量与当前节点的指示向量相乘
-                s_L *= s
-                s_R *= s
-                # 计算左右子树的一、二阶梯度
-                g_L = g * s_L
-                h_L = h * s_L
-                g_R = g * s_R
-                h_R = h * s_R
-                return g_L, h_L, s_L, g_R, h_R, s_R
-
             # 在SPU上计算子树参数
             g_L, h_L, s_L, g_R, h_R, s_R = self.spu(
                 subtree_args, num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER, user_specified_num_returns=6)(g, h, s, s_L, s_R)
@@ -333,33 +451,7 @@ class Tree(SSML):
         indices = [(j, k) for j in range(len(G_L)) for k in range(len(G_L[j]))]
         print("Selecting best split ...")
 
-        def gain(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> jnp.ndarray:
-            """
-            计算增益
-            ## Args:
-            - g_L: 小于本分裂点的数据的对应一阶梯度之和
-            - g_R: 大于等于本分裂点的数据的对应一阶梯度之和
-            - h_L: 小于本分裂点的数据的对应二阶梯度之和
-            - h_R: 大于等于本分裂点的数据的对应二阶梯度之和
-            - loss_n: 当前节点的目标损失的分子
-            - loss_d: 当前节点的目标损失的分母
-            """
-            return (1/2) * ((g_L / h_L) + (g_R / h_R) - (loss_n / loss_d)) - gamma
         if self.div:  # 使用除法直接计算所有节点的增益（尚未测试）
-            def argmax_gain(G_L: jnp.ndarray, G_R: jnp.ndarray, H_L: jnp.ndarray, H_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> tuple[int, bool]:
-                """
-                计算增益最大值
-                """
-                G_L = jnp.array(G_L)
-                G_R = jnp.array(G_R)
-                H_L = jnp.array(H_L)
-                H_R = jnp.array(H_R)
-                # 计算所有分裂点的增益
-                gain_ = gain(G_L, G_R, H_L, H_R, loss_n, loss_d, gamma)
-                # 找到增益最大的索引
-                i = jnp.argmax(gain_)
-                # 返回索引和增益是否为正
-                return i, gain_.flatten()[i] > 0
             # 在SPU上计算最优分裂点
             i, sign = self.spu(argmax_gain, num_returns_policy=SPUCompilerNumReturnsPolicy.FROM_USER,
                                user_specified_num_returns=2)(G_L, G_R, H_L, H_R, loss_n, loss_d, self.gamma)
@@ -370,41 +462,6 @@ class Tree(SSML):
             j_opt, k_opt = indices[i]
             return j_opt, k_opt, sign
         else:
-            # 不使用除法的比较方法
-            def leq(g_L1: list[float], g_R1: list[float], h_L1: list[float], h_R1: list[float], g_L2: list[float], g_R2: list[float], h_L2: list[float], h_R2: list[float]) -> jnp.ndarray:
-                """
-                比较两个分裂点的增益。本函数可以拓展为向量以并行地比较多对分裂点的增益
-                ## Args:
-                - g_L1: 小于第一个分裂点的数据对应一阶梯度之和
-                - g_R1: 大于等于第一个分裂点的数据对应一阶梯度之和
-                - h_L1: 小于第一个分裂点的数据对应二阶梯度之和
-                - h_R1: 大于等于第一个分裂点的数据对应二阶梯度之和
-                - g_L2: 小于第二个分裂点的数据对应一阶梯度之和
-                - g_R2: 大于等于第二个分裂点的数据对应一阶梯度之和
-                - h_L2: 小于第二个分裂点的数据对应二阶梯度之和
-                - h_R2: 大于等于第二个分裂点的数据对应二阶梯度之和
-                ## Returns:
-                - 第一个分裂点的增益是否大于第二个分裂点的增益
-                """
-                g_L1 = jnp.array(g_L1, dtype=float)
-                g_R1 = jnp.array(g_R1, dtype=float)
-                g_L2 = jnp.array(g_L2, dtype=float)
-                g_R2 = jnp.array(g_R2, dtype=float)
-                h_L1 = jnp.array(h_L1, dtype=float)
-                h_R1 = jnp.array(h_R1, dtype=float)
-                h_L2 = jnp.array(h_L2, dtype=float)
-                h_R2 = jnp.array(h_R2, dtype=float)
-
-                # 计算比较增益所需的中间变量
-                h_L12 = h_L1 * h_L2
-                h_R12 = h_R1 * h_R2
-                # 计算分子和分母（避免除法）
-                nom = h_R12 * (g_L1 * h_L2 - g_L2 * h_L1) + \
-                    h_L12 * (g_R1 * h_R2 - g_R2 * h_R1)
-                denom = h_L12 * h_R12
-                # 通过符号比较判断增益大小
-                return (nom > 0) ^ (denom > 0)
-
             def argmax(G_L: list[list[SPUObject]], G_R: list[list[SPUObject]], H_L: list[list[SPUObject]], H_R: list[list[SPUObject]]) -> tuple[int, int, float, float, float, float]:
                 """
                 使用分组两两比较的方法求解增益最大分裂点
@@ -443,7 +500,7 @@ class Tree(SSML):
                     h_Rb = [H_R[i][j] for i, j in b]
 
                     # 在SPU上比较两组的增益
-                    a_lt_b = self.spu(leq)(g_La, g_Ra, h_La,
+                    a_lt_b = self.spu(leq_compare)(g_La, g_Ra, h_La,
                                            h_Ra, g_Lb, g_Rb, h_Lb, h_Rb)
                     # 揭示比较结果
                     a_lt_b = sf.reveal(a_lt_b)
@@ -469,18 +526,6 @@ class Tree(SSML):
             h_L_opt = H_L[j_opt][k_opt]
             h_R_opt = H_R[j_opt][k_opt]
 
-            def max_gain_sign(g_L: jnp.ndarray, g_R: jnp.ndarray, h_L: jnp.ndarray, h_R: jnp.ndarray, loss_n: jnp.ndarray, loss_d: jnp.ndarray, gamma: float) -> jnp.ndarray:
-                """ 计算增益最大分裂点的正负"""
-                # 计算中间变量
-                h_LR = h_L * h_R
-                denom = 2 * h_LR * loss_d
-                # 计算增益分子的等价形式
-                nom = (g_L * h_R + h_L * g_R - 2 * gamma * h_LR) * \
-                    loss_d - h_LR * loss_n
-                # 返回增益是否为正
-                return ~ (nom > 0) ^ (denom > 0)
-            # max_gain = self.spu(gain)(g_L_opt, g_R_opt, h_L_opt, h_R_opt, loss_n, loss_d, self.gamma)
-            # max_gain = sf.reveal(max_gain)
             # 在SPU上计算增益符号
             sign = self.spu(max_gain_sign)(g_L_opt, g_R_opt,
                                            h_L_opt, h_R_opt, loss_n, loss_d, self.gamma)
@@ -500,12 +545,6 @@ class Tree(SSML):
         """
 
         print("Aggregating buckets for each feature...")
-
-        def bucket_sum(g: jnp.ndarray, h: jnp.ndarray, bucket: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-            '''计算桶内一、二阶梯度之和'''
-            g_sum = jnp.sum(g[bucket])
-            h_sum = jnp.sum(h[bucket])
-            return g_sum, h_sum
 
         G, H = [], []
         # 遍历每个特征的桶
@@ -546,10 +585,6 @@ class Tree(SSML):
 
         def search_tree(X: FedNdarray, cur: TreeNode | Leaf) -> list[int]:
             '''递归搜索树'''
-            def leq(X: jnp.ndarray, j: int, k: int, Quantiles: jnp.ndarray) -> jnp.ndarray:
-                """ 判断X[:, j]是否小于等于当前节点的阈值Quantiles[j, k] """
-                return X[:, j] <= Quantiles[j, k]
-
             # 获取样本数量
             num_samples = X.shape[0]
             # 空输入返回空列表
@@ -567,12 +602,12 @@ class Tree(SSML):
                     # 特征属于company
                     X_c = X.partitions[self.company]
                     Quantiles_c = Quantiles.partitions[self.company]
-                    Xj_leq_Qjk = self.company(leq)(X_c, j, k, Quantiles_c)
+                    Xj_leq_Qjk = self.company(tree_leq)(X_c, j, k, Quantiles_c)
                 else:
                     # 特征属于partner
                     X_p = X.partitions[self.partner]
                     Quantiles_p = Quantiles.partitions[self.partner]
-                    Xj_leq_Qjk = self.partner(leq)(
+                    Xj_leq_Qjk = self.partner(tree_leq)(
                         X_p, j - self.split_index, k, Quantiles_p)
                 # 揭示比较结果
                 Xj_leq_Qjk = sf.reveal(Xj_leq_Qjk)
@@ -599,7 +634,7 @@ class Tree(SSML):
         leaves_ids = search_tree(X, self.root)
         # leaves_ids = np.array(leaves_ids)
         # 根据叶子索引获取预测值
-        w = self.train_label_keeper(lambda w, leaf_id: w[leaf_id].reshape(-1, 1))(self.leaf_weights, leaves_ids)
+        w = self.train_label_keeper(select_leaf_weight)(self.leaf_weights, leaves_ids)
         # 将预测值发送给标签y的持有者
         return w
 
@@ -644,7 +679,7 @@ class SSXGBoost(SSML):
         preds = 0
         # 累加每棵树的预测值
         for m in self.trees:
-            preds = self.train_label_keeper(lambda x, y: x + y)(preds, m.forward(X))
+            preds = self.train_label_keeper(add_preds)(preds, m.forward(X))
         return preds
 
     def predict(self, X: FedNdarray, device: PYU) -> PYUObject:
@@ -739,7 +774,7 @@ class SSXGBoost(SSML):
 
             # 预测
             y_t = tree.train_pred.to(self.train_label_keeper)
-            y_pred = self.train_label_keeper(lambda x, y: x + y)(y_pred, y_t)
+            y_pred = self.train_label_keeper(add_preds)(y_pred, y_t)
             self.trees.append(tree)
 
             # 应用激活函数获取概率
@@ -840,7 +875,7 @@ class SSXGBoost(SSML):
             assert tree.leaf_weights.device == self.train_label_keeper, "Leaf weights must be on train_label_keeper"
             weights.append(tree.leaf_weights)
         # 将权重转换为NumPy数组
-        self.train_label_keeper(lambda x: np.array(x))(weights)
+        self.train_label_keeper(to_np_array)(weights)
         # 创建模型信息字典
         info = {
             'in_features': self.in_features,
@@ -855,47 +890,15 @@ class SSXGBoost(SSML):
             'save_as': ext
         }
 
-        def save_model(quantiles: np.ndarray, path: str, save_ext: str, model_info: dict, tree_roots: list):
-            '''保存模型结构'''
-            # 创建保存目录
-            try:
-                os.makedirs(path, exist_ok=True)
-                print(f"Directory '{path}' created or already exists.")
-            except OSError as e:
-                print(f"Error creating directory '{path}': {e}")
-
-            # 根据扩展名保存分位点数据
-            if save_ext == 'npy':
-                np.save(os.path.join(path, 'quantiles.npy'), quantiles)
-            elif save_ext == 'csv':
-                # CSV格式不支持不规则数组，保存为npy格式
-                np.savetxt(os.path.join(path, 'quantiles.csv'),
-                           quantiles, delimiter=',')
-            # 保存模型信息为JSON
-            json.dump(model_info, open(os.path.join(path, 'info.json'), 'w'))
-            # 使用dill保存树结构
-            with open(os.path.join(path, 'tree.pkl'), 'wb') as f:
-                dill.dump(tree_roots, f)
-
-        def save_weights(weights, save_ext: str, path: str):
-            '''保存权重'''
-            # 根据扩展名保存权重
-            if save_ext == 'npy':
-                np.save(os.path.join(path, 'weight.npy'),
-                        weights, allow_pickle=True)
-            elif save_ext == 'csv':
-                np.savetxt(os.path.join(path, 'weight.csv'),
-                        weights, delimiter=',')
-
         # 获取各方的分位点数据
         quantiles1 = self.FedQuantiles.partitions[self.company]
         quantiles2 = self.FedQuantiles.partitions[self.partner]
 
         # 在各方设备上保存模型
-        self.company(save_model)(quantiles1, paths['company'], ext, info, trees)
-        self.partner(save_model)(quantiles2, paths['partner'], ext, info, trees)
+        self.company(xgb_save_model)(quantiles1, paths['company'], ext, info, trees)
+        self.partner(xgb_save_model)(quantiles2, paths['partner'], ext, info, trees)
         # 在标签持有方保存权重
-        self.train_label_keeper(save_weights)(weights, ext, paths[info['train_label_keeper']])
+        self.train_label_keeper(xgb_save_weights)(weights, ext, paths[info['train_label_keeper']])
 
     @classmethod
     def load(cls, devices: dict, paths: dict[str, str]) -> 'SSXGBoost':
@@ -916,27 +919,11 @@ class SSXGBoost(SSML):
             'partner': 'path/to/partner/model/dir'
         }
         """
-        def load_model(path: str):
-            '''加载模型'''
-            # 读取模型信息
-            info = json.load(open(os.path.join(path, 'info.json'), 'r'))
-            save_ext = info['save_as']
-            # 根据扩展名加载分位点数据
-            if save_ext == 'csv':
-                quantiles = np.loadtxt(os.path.join(
-                    path, 'quantiles.csv'), delimiter=',',ndmin=2)
-            else:
-                quantiles = np.load(os.path.join(path, 'quantiles.npy'))
-            # 使用dill加载树结构
-            with open(os.path.join(path, 'tree.pkl'), 'rb') as f:
-                trees = dill.load(f)
-            return trees, quantiles, info
-
         # 在各方设备上加载模型
         trees1, quantiles1, info1 = devices['company'](
-            load_model, num_returns=3)(paths['company'])
+            xgb_load_model, num_returns=3)(paths['company'])
         trees2, quantiles2, info2 = devices['partner'](
-            load_model, num_returns=3)(paths['partner'])
+            xgb_load_model, num_returns=3)(paths['partner'])
         info1 = sf.reveal(info1)
         info2 = sf.reveal(info2)
         trees = sf.reveal(trees1)
@@ -959,16 +946,8 @@ class SSXGBoost(SSML):
         model.out_features = info['out_features']
         model.train_label_keeper = model.company if info['train_label_keeper'] == 'company' else model.partner if info['train_label_keeper'] == 'partner' else None
 
-        def load_weights(path: str, save_ext: str):
-            '''加载权重'''
-            # 根据扩展名加载权重
-            if save_ext == 'csv':
-                weights = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',',ndmin=2)
-            else:
-                weights = np.load(os.path.join(path, 'weight.npy'))
-            return weights
         # 在标签持有方加载权重
-        w = model.train_label_keeper(load_weights)(paths[info['train_label_keeper']], info['save_as'])
+        w = model.train_label_keeper(xgb_load_weights)(paths[info['train_label_keeper']], info['save_as'])
         # 重建联邦分位点数据
         model.FedQuantiles = load(
             {model.company: quantiles1, model.partner: quantiles2}, partition_way=PartitionWay.HORIZONTAL)
@@ -997,7 +976,7 @@ class SSXGBoost(SSML):
             # 恢复树的相关信息
             t.FedQuantiles = model.FedQuantiles
             t.split_index = split_index
-            t.leaf_weights = model.train_label_keeper(lambda x, idx: x[idx])(w, i)
+            t.leaf_weights = model.train_label_keeper(select_weight_by_idx)(w, i)
             t.train_label_keeper = model.train_label_keeper
             # 将树加入列表
             model.trees.append(t)
@@ -1091,107 +1070,3 @@ def recover_buckets(label_matrix: np.ndarray) -> np.ndarray:
             buckets_j.append(items_in_buckets)
         buckets.append(buckets_j)
     return np.array(buckets)
-
-# 直接运行本文件调用这个函数
-
-
-def SSXGBoost_test(dataset):
-    """（不执行PSI）测试XGBoost"""
-    # 加载数据集
-    from common import load_dataset
-    train_X, train_y, test_X, test_y = load_dataset(dataset)
-    # 关闭现有的SecretFlow集群
-    sf.shutdown(barrier_on_shutdown=False)
-    # 导入MPC初始化器
-    from common import MPCInitializer
-    # 创建MPC初始化实例
-    mpc_init = MPCInitializer()
-    # 获取SPU和各参与方设备
-    spu = mpc_init.spu
-    company = mpc_init.company
-    partner = mpc_init.partner
-
-    # 将 train_X 每列等频分桶为 k+1 份，并计算 k 个分位点
-    split_index = train_X.shape[1] // 2
-    # 对company和partner的特征进行分桶
-    Quantiles1, _, buckets_labels1 = quantize_buckets(
-        train_X[:, :split_index], k=20)
-    Quantiles2, _, buckets_labels2 = quantize_buckets(
-        train_X[:, split_index:], k=20)
-    # 合并桶标签并恢复桶列表
-    buckets = recover_buckets(np.hstack((buckets_labels1, buckets_labels2)))
-
-    # 将分位点数据转移到各方
-    Quantiles1 = sf.to(company, Quantiles1)
-    Quantiles2 = sf.to(partner, Quantiles2)
-    # 创建联邦分位点数据
-    FedQuantiles = load({company: Quantiles1, partner: Quantiles2},
-                        partition_way=PartitionWay.HORIZONTAL)
-
-    # 创建SSXGBoost模型
-    model = SSXGBoost(devices={'spu': spu, 
-                               'company': company, 
-                               'partner': partner},
-                      max_depth=2, n_estimators=2, div=False)
-
-    # 然后把训练集 secret‐share 到 SPU
-    train_X = sf.to(company, np.array(train_X)).to(spu)
-    # 将标签转移到partner方
-    train_y = sf.to(partner, np.array(train_y, dtype=np.float32))
-
-    # 创建联邦测试特征
-    test_X1, test_X2 = test_X[:, :split_index], test_X[:, split_index:]
-    test_X1 = sf.to(company, test_X1)
-    test_X2 = sf.to(partner, test_X2)
-    test_X = load({company: test_X1, partner: test_X2})
-    # 将测试标签转移到company方
-    test_y = sf.to(company, np.array(test_y, dtype=np.float32))
-
-    # 训练模型
-    train_accs, test_accs = model.fit(
-        train_X, train_y, buckets, FedQuantiles, X_test=test_X, y_test=test_y)
-
-    import matplotlib.pyplot as plt
-    # 绘制训练准确率曲线
-    plt.plot(train_accs, label="train_acc")
-    # 绘制测试准确率曲线
-    plt.plot(test_accs, label="test_acc")
-    plt.xlabel("nEstimators")
-    plt.legend()
-    plt.title(f"SSXGBoost_{dataset}")
-    plt.savefig(f"SSXGBoost_{dataset}.png")
-    paths = {'company': f'./SSXGBoost_{dataset}_company',
-             'partner': f'./SSXGBoost_{dataset}_partner'}
-    # 保存模型
-    model.save(paths, ext='npy')
-    # 加载模型
-    model = SSXGBoost.load({'company' : company, 'partner': partner}, paths)
-    # 进行预测
-    pred_y = model.predict(test_X, device=test_y.device)
-    # 计算评分
-    scores = model.score(test_y, pred_y)
-    print(scores)
-    
-    # test_X = sf.reveal(test_X)
-
-    # import xgboost as xgb
-    # model = xgb.XGBClassifier()
-
-    # if num_cat > 1:
-    #     train_y = train_y.argmax(axis=1)
-
-    # model.fit(train_X,train_y.ravel())
-    # y_pred = model.predict(test_X)
-    # Accuracy = accuracy_score(test_y, y_pred)
-    # print(f"Accuracy of XGBoost on {dataset} dataset: {Accuracy:.4f}")
-    # 关闭SecretFlow
-    sf.shutdown()
-
-
-if __name__ == "__main__":
-    start_time = time()
-    SSXGBoost_test("shop")
-    end_time = time()
-    print(f"SSXGBoost test completed in {end_time - start_time:.2f} seconds.")
-    # SSXGBoost_test("adult")
-    os._exit(0)

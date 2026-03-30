@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import secretflow as sf
 from secretflow.data.ndarray import load, PartitionWay
+from infer import read_dataset, filter_data, compute_common_keys, make_prediction_df
 
 pytestmark = pytest.mark.integration
 
@@ -180,3 +181,112 @@ class TestInferEngineEndToEnd:
             assert "id" in result.columns
             assert "prediction" in result.columns
             assert len(result) == len(keys)
+
+
+# ---------------------------------------------------------------------------
+# 单元测试 — infer.py 提取的模块级函数
+# ---------------------------------------------------------------------------
+
+class TestReadDataset:
+    pytestmark = pytest.mark.unit
+
+    def test_basic_read(self, tmp_path):
+        """读取CSV文件返回keys列表和DataFrame"""
+        csv_path = tmp_path / "data.csv"
+        df = pd.DataFrame({'id': [1, 2, 3], 'feat1': [0.1, 0.2, 0.3], 'feat2': [0.4, 0.5, 0.6]})
+        df.to_csv(csv_path, index=False)
+        keys, data = read_dataset(str(csv_path))
+        assert keys == ['1', '2', '3']
+        assert isinstance(data, pd.DataFrame)
+        assert data.shape == (3, 3)
+
+    def test_string_keys(self, tmp_path):
+        """keys应转换为字符串"""
+        csv_path = tmp_path / "data.csv"
+        df = pd.DataFrame({'id': ['alice', 'bob'], 'x': [1.0, 2.0]})
+        df.to_csv(csv_path, index=False)
+        keys, _ = read_dataset(str(csv_path))
+        assert keys == ['alice', 'bob']
+
+    def test_empty_dataset(self, tmp_path):
+        """空数据集返回空keys"""
+        csv_path = tmp_path / "empty.csv"
+        df = pd.DataFrame({'id': pd.Series([], dtype=str), 'x': pd.Series([], dtype=float)})
+        df.to_csv(csv_path, index=False)
+        keys, data = read_dataset(str(csv_path))
+        assert keys == []
+        assert len(data) == 0
+
+
+class TestFilterData:
+    pytestmark = pytest.mark.unit
+
+    def test_basic_filter(self):
+        """按keys过滤数据并返回numpy数组"""
+        df = pd.DataFrame({'id': ['a', 'b', 'c', 'd'], 'f1': [1, 2, 3, 4], 'f2': [5, 6, 7, 8]})
+        result = filter_data(df, ['b', 'd'])
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (2, 2)
+
+    def test_removes_revenue_column(self):
+        """如有Revenue列则去除"""
+        df = pd.DataFrame({'id': ['a', 'b'], 'f1': [1, 2], 'Revenue': [100, 200]})
+        result = filter_data(df, ['a', 'b'])
+        assert result.shape == (2, 1)
+
+    def test_no_revenue_column(self):
+        """无Revenue列时保留所有特征"""
+        df = pd.DataFrame({'id': ['a', 'b'], 'f1': [1, 2], 'f2': [3, 4]})
+        result = filter_data(df, ['a', 'b'])
+        assert result.shape == (2, 2)
+
+    def test_sorted_by_id(self):
+        """结果按id排序"""
+        df = pd.DataFrame({'id': ['c', 'a', 'b'], 'f1': [3, 1, 2]})
+        result = filter_data(df, ['a', 'b', 'c'])
+        np.testing.assert_array_equal(result.flatten(), [1, 2, 3])
+
+    def test_filter_no_match(self):
+        """无匹配项返回空数组"""
+        df = pd.DataFrame({'id': ['a', 'b'], 'f1': [1, 2]})
+        result = filter_data(df, ['x', 'y'])
+        assert result.shape[0] == 0
+
+
+class TestComputeCommonKeys:
+    pytestmark = pytest.mark.unit
+
+    def test_basic_intersection(self):
+        result = compute_common_keys(['a', 'b', 'c'], ['b', 'c', 'd'])
+        assert set(result) == {'b', 'c'}
+
+    def test_no_overlap(self):
+        result = compute_common_keys(['a', 'b'], ['c', 'd'])
+        assert result == []
+
+    def test_full_overlap(self):
+        result = compute_common_keys(['a', 'b'], ['a', 'b'])
+        assert set(result) == {'a', 'b'}
+
+    def test_empty_inputs(self):
+        assert compute_common_keys([], ['a']) == []
+        assert compute_common_keys(['a'], []) == []
+
+
+class TestMakePredictionDf:
+    pytestmark = pytest.mark.unit
+
+    def test_basic(self):
+        keys = ['a', 'b', 'c']
+        y = np.array([0.1, 0.9, 0.5])
+        result = make_prediction_df(keys, y)
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.columns) == ['id', 'prediction']
+        assert list(result['id']) == keys
+        np.testing.assert_array_almost_equal(result['prediction'].values, y)
+
+    def test_2d_predictions(self):
+        keys = ['x', 'y']
+        y = np.array([[0.3], [0.7]])
+        result = make_prediction_df(keys, y)
+        assert result.shape == (2, 2)

@@ -4,17 +4,79 @@ import jax.numpy as jnp
 # 导入SecretFlow框架
 import secretflow as sf
 from secretflow.device import SPUObject, PYUObject
-from secretflow import SPU, PYU
+from secretflow import PYU
 from secretflow.data import FedNdarray, PartitionWay
 from secretflow.data.ndarray import load
 # 导入公共模块中的函数和基类
-from common import approx_sigmoid, sigmoid, softmax, load_dataset, compute_accuracy
+from common import approx_sigmoid, sigmoid, softmax, compute_accuracy, compute_f1_metric, compute_for_metric
 # 导入安全共享机器学习基类
 from common import SSML
 import os, json
 import matplotlib.pyplot as plt
-# 导入sklearn准确率计算函数，用于对比实验
-from sklearn.metrics import accuracy_score
+
+
+def spu_matmul(X, w):
+    """矩阵乘法 X @ w"""
+    return X @ w
+
+
+def spu_get_item(arr: jnp.ndarray, keys):
+    """数组索引取值 arr[keys]"""
+    return arr[keys]
+
+
+def compute_gradient(y_pred, y):
+    """计算梯度：预测值减去真实标签"""
+    return y_pred - y
+
+
+def grad_desc(lambda_, w: jnp.ndarray, X: jnp.ndarray, grad: jnp.ndarray, lr: float):
+    """梯度下降更新权重，包含L2正则化"""
+    batch_size = X.shape[0]
+    return (1 - lambda_) * w - (lr / batch_size) * (X.transpose() @ grad)
+
+
+def to_int_labels_with_threshold(logits: np.ndarray, threshold):
+    """将logit转化为整数标签，使用自定义阈值"""
+    if logits.shape[1] == 1:
+        return (logits > threshold).astype(int)
+    else:
+        return np.argmax(logits, axis=1)
+
+
+def xw_product(X, w):
+    """计算X @ w，用于predict中company/partner分别计算"""
+    return X @ w
+
+
+def xw_sum_activate(a, b, activate_fn):
+    """聚合两方结果并应用激活函数"""
+    return activate_fn(a + b)
+
+
+def lr_save_model(w: np.ndarray, path: str, ext: str, info: dict):
+    """保存LR模型权重和元信息到指定路径"""
+    try:
+        os.makedirs(path, exist_ok=True)
+        print(f"Directory '{path}' created or already exists.")
+    except OSError as e:
+        print(f"Error creating directory '{path}': {e}")
+    if ext == 'npy':
+        np.save(os.path.join(path, 'weight.npy'), w)
+    elif ext == 'csv':
+        np.savetxt(os.path.join(path, 'weight.csv'), w, delimiter=',')
+    json.dump(info, open(os.path.join(path, 'info.json'), 'w'))
+
+
+def lr_load_model(path: str):
+    """从指定路径加载LR模型权重和元信息"""
+    info = json.load(open(os.path.join(path, 'info.json'), 'r'))
+    ext = info['save_as']
+    if ext == 'csv':
+        w = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',', ndmin=2)
+    else:
+        w = np.load(os.path.join(path, 'weight.npy'))
+    return w, info
 
 class SSLR(SSML):
     """秘密共享逻辑回归模型，支持二分类和多分类任务"""
@@ -48,11 +110,8 @@ class SSLR(SSML):
         ## Args:
          - X: 输入秘密共享的特征矩阵
         """
-        # 定义矩阵乘法函数
-        def matmul(X, w):
-            return X @ w
         # 在SPU上执行矩阵乘法，计算线性组合z = X @ w
-        z = self.spu(matmul)(X, self.w)
+        z = self.spu(spu_matmul)(X, self.w)
         # 将z发送给标签y的持有者
         z = z.to(self.train_label_keeper) # 将z发送给标签y的持有
         # 根据配置选择激活函数
@@ -76,9 +135,7 @@ class SSLR(SSML):
         # 断言权重必须在SPU上
         assert isinstance(self.w, SPUObject), "Weights must be on SPU"
         # 分别获取company和partner对应的权重部分
-        def get_item(arr : jnp.ndarray, keys):
-            return arr[keys]
-        w1, w2= self.spu(get_item, static_argnames=['keys'])(self.w, np.arange(self.split_col)), self.spu(get_item, static_argnames=['keys'])(self.w, np.arange(self.split_col, self.in_features))
+        w1, w2= self.spu(spu_get_item, static_argnames=['keys'])(self.w, np.arange(self.split_col)), self.spu(spu_get_item, static_argnames=['keys'])(self.w, np.arange(self.split_col, self.in_features))
         # 将权重发送到各自的参与方，并封装为FedNdarray格式
         w1 = w1.to(self.company)
         w2 = w2.to(self.partner)
@@ -104,8 +161,8 @@ class SSLR(SSML):
         elif isinstance(self.w, FedNdarray):
             w = self.w
         # company和partner计算其特征与权重的乘积
-        z1 = self.company(lambda X, w: X @ w)(X.partitions[self.company], w.partitions[self.company]).to(device)
-        z2 = self.partner(lambda X, w: X @ w)(X.partitions[self.partner], w.partitions[self.partner]).to(device)
+        z1 = self.company(xw_product)(X.partitions[self.company], w.partitions[self.company]).to(device)
+        z2 = self.partner(xw_product)(X.partitions[self.partner], w.partitions[self.partner]).to(device)
         
         # 根据配置选择激活函数
         if self.approx:
@@ -116,18 +173,10 @@ class SSLR(SSML):
             else:
                 activate_fn = softmax
         # 在目标设备上聚合两方的结果并应用激活函数
-        y = device(lambda a, b: activate_fn(a + b))(z1, z2)
+        y = device(xw_sum_activate)(z1, z2, activate_fn)
 
-        def to_int_labels(logits : np.ndarray, threshold):
-            '''将logit转化为整数标签，使用自定义阈值'''
-            if logits.shape[1] == 1:
-                # 二分类：根据阈值判断类别
-                return (logits > threshold).astype(int)
-            else:
-                # 多分类：取最大概率的类别
-                return np.argmax(logits, axis=1)
         # 将概率输出转换为整数标签
-        y = device(to_int_labels, static_argnames=['threshold'])(y, self.pred_threshold)
+        y = device(to_int_labels_with_threshold, static_argnames=['threshold'])(y, self.pred_threshold)
 
         return y
 
@@ -142,20 +191,12 @@ class SSLR(SSML):
         """
         # 确保y和y_pred在同一设备上
         assert y.device == y_pred.device, "y and y_pred must be on the same device"
-        # 计算梯度：预测值减去真实标签
-        def compute_gradient(y_pred, y):
-            return y_pred - y
         # 在标签持有者设备上计算梯度
         grad = self.train_label_keeper(compute_gradient)(y_pred, y)
         # 将梯度发送到SPU
         grad = grad.to(self.spu)
-        # 梯度下降更新函数，包含L2正则化
-        def grad_desc(lambda_, w : jnp.ndarray, X : jnp.ndarray, grad : jnp.ndarray):
-            batch_size = X.shape[0]
-            # 权重更新公式：w = (1-lambda)*w - lr/batch_size * X^T * grad
-            return (1 - lambda_) * w - (lr/batch_size) * (X.transpose() @ grad)
         # 在SPU上执行梯度下降更新权重
-        self.w = self.spu(grad_desc)(self.lambda_, self.w, X, grad)
+        self.w = self.spu(grad_desc)(self.lambda_, self.w, X, grad, lr)
 
     def fit(self, X : SPUObject, y : SPUObject | PYUObject, X_test : FedNdarray | None = None, y_test : PYUObject | None = None, batch_size = 64, val_steps = 1, n_epochs = 10, lr = 0.1, split_col : int = None):
         """
@@ -208,12 +249,10 @@ class SSLR(SSML):
         for j in trange(0,num_samples,batch_size):
             batch = min(batch_size,num_samples - j)
             keys = np.arange(j, j + batch)
-            def get_item(arr : jnp.ndarray, keys):
-                return arr[keys]
             # 获取当前batch的特征数据
-            X_batch = self.spu(get_item, static_argnames=['keys'])(X, keys)
+            X_batch = self.spu(spu_get_item, static_argnames=['keys'])(X, keys)
             # 获取当前batch的标签数据
-            y_batch = self.train_label_keeper(get_item, static_argnames=['keys'])(y, keys)
+            y_batch = self.train_label_keeper(spu_get_item, static_argnames=['keys'])(y, keys)
             Xs.append(X_batch)
             ys.append(y_batch)
         # 初始化训练步数计数器
@@ -248,38 +287,6 @@ class SSLR(SSML):
                     #     # print(f"DEBUG - y_true first 100 values: {y_true[:100].flatten()}")
                     #     # print(f"DEBUG - y_pred first 100 values: {y_pred[:100].flatten()}")
                     #     return np.mean(y_true == y_pred)
-                    def compute_f1_metric(y_true : np.ndarray, y_pred : np.ndarray):
-                        '''F1分数计算函数'''
-                        y_true = y_true.reshape(-1,1)
-                        y_pred = y_pred.reshape(-1,1)
-                        # print(f"DEBUG F1 - y_true range: [{np.min(y_true)}, {np.max(y_true)}]")
-                        # print(f"DEBUG F1 - y_pred range: [{np.min(y_pred)}, {np.max(y_pred)}]")
-                        # 使用更安全的比较方式，处理浮点数
-                        tp = np.sum((np.abs(y_true - 0.0) < 1e-6) & (np.abs(y_pred - 0.0) < 1e-6))
-                        fp = np.sum((np.abs(y_true - 1.0) < 1e-6) & (np.abs(y_pred - 0.0) < 1e-6))
-                        fn = np.sum((np.abs(y_true - 0.0) < 1e-6) & (np.abs(y_pred - 1.0) < 1e-6))
-                        # print(f"DEBUG F1 - TP: {tp}, FP: {fp}, FN: {fn}")
-                        # F1分数精确率和召回率的调和平均
-                        precision = tp / (tp + fp + 1e-8)  # 添加小数避免除零
-                        recall = tp / (tp + fn + 1e-8)
-                        f1 = 2 * (precision * recall) / (precision + recall + 1e-8)  
-                        return f1
-                    
-                    # 定义误漏率（FOR）计算函数
-                    def compute_for_metric(y_true : np.ndarray, y_pred : np.ndarray):
-                        y_true = y_true.reshape(-1,1)
-                        y_pred = y_pred.reshape(-1,1)
-                        # print(f"DEBUG FOR - y_true range: [{np.min(y_true)}, {np.max(y_true)}]")
-                        # print(f"DEBUG FOR - y_pred range: [{np.min(y_pred)}, {np.max(y_pred)}]")
-                        tp = np.sum((y_true == 0) & (y_pred == 0))
-                        fp = np.sum((y_true == 1) & (y_pred == 0))
-                        fn = np.sum((y_true == 0) & (y_pred == 1))
-                        tn = np.sum((y_true == 1) & (y_pred == 1))
-                        # print(f"DEBUG FOR - TP: {tp}, FP: {fp}, FN: {fn}, TN: {tn}")
-                        # 误漏率（False omission rate）指模型预测的全部阴性例数中实际患病者所占比例，反映了模型发现阴性者中患病的情况。
-                        fOr = fn / (fn + tn + 1e-8)
-                        return fOr
-                    
                     # 在验证设备上计算各项指标
                     acc = y_test.device(compute_accuracy)(y_test, y_pred)
                     f1 = y_test.device(compute_f1_metric)(y_test, y_pred)
@@ -334,25 +341,9 @@ class SSLR(SSML):
             'approx': bool(self.approx),
             'save_as' : ext
         }
-        # 定义保存模型的内部函数
-        def save_model(w : np.ndarray, path : str):
-            # 创建保存目录
-            try:
-                os.makedirs(path, exist_ok=True)
-                print(f"Directory '{path}' created or already exists.")
-            except OSError as e:
-                print(f"Error creating directory '{path}': {e}")
-            
-            # 根据指定格式保存权重文件
-            if ext == 'npy':
-                np.save(os.path.join(path, 'weight.npy'), w)
-            elif ext == 'csv':
-                np.savetxt(os.path.join(path, 'weight.csv'), w, delimiter=',')
-            # 保存模型元信息到JSON文件
-            json.dump(info, open(os.path.join(path, 'info.json'), 'w'))
         # 分别在company和partner方执行保存操作
-        self.company(save_model)(w1, paths['company'])
-        self.partner(save_model)(w2, paths['partner'])
+        self.company(lr_save_model)(w1, paths['company'], ext, info)
+        self.partner(lr_save_model)(w2, paths['partner'], ext, info)
 
     @classmethod
     def load(cls, devices, paths):
@@ -375,20 +366,9 @@ class SSLR(SSML):
         ## Returns:
         - model: 加载完成的SSLR模型实例
         """
-        # 定义加载模型的内部函数
-        def load_model(path : str):
-            # 从JSON文件读取模型元信息
-            info = json.load(open(os.path.join(path, 'info.json'), 'r'))
-            ext = info['save_as']
-            # 根据保存格式选择加载方式
-            if ext == 'csv':
-                w = np.loadtxt(os.path.join(path, 'weight.csv'), delimiter=',',ndmin=2)
-            else:
-                w = np.load(os.path.join(path, 'weight.npy'))
-            return w, info
         # 分别在company和partner方执行加载操作
-        w1, info1 = devices['company'](load_model,num_returns = 2)(paths['company'])
-        w2, info2 = devices['partner'](load_model,num_returns = 2)(paths['partner'])
+        w1, info1 = devices['company'](lr_load_model, num_returns=2)(paths['company'])
+        w2, info2 = devices['partner'](lr_load_model, num_returns=2)(paths['partner'])
         # 揭示（reveal）密态的模型元信息，验证双方的一致性
         info1 = sf.reveal(info1)
         info2 = sf.reveal(info2)
@@ -403,88 +383,3 @@ class SSLR(SSML):
         # 恢复模型的输入输出维度信息
         model.in_features, model.out_features = info['shape']
         return model
-
-# 运行本文件直接执行这个函数
-def SSLR_test(dataset):
-    """
-    SSLR模型测试函数（不执行PSI隐私求交集）
-    用于测试秘密共享逻辑回归模型的性能，并绘制准确率曲线与sklearn对比
-    ## Args:
-     - dataset: 数据集名称，如'breast'
-    """
-    # 初始化多方计算环境
-    from common import MPCInitializer
-    mpc_init = MPCInitializer()
-    spu = mpc_init.spu
-    company = mpc_init.company
-    partner = mpc_init.partner
-    # 构建设备字典
-    devices = {
-        'spu': spu,
-        'company': company,
-        'partner': partner
-    }
-
-    # 加载训练和测试数据集
-    train_X, train_y, test_X, test_y = load_dataset(dataset)
-    # 特征划分列：将特征平均分配给company和partner
-    split_col = train_X.shape[1] // 2
-    # 获取类别数
-    num_cat = train_y.shape[1] if len(train_y.shape) > 1 else 1
-    # 将测试集特征按纵向划分并转换为联邦数组
-    test_X = load({company : sf.to(company, test_X[:, :split_col]), partner : sf.to(partner, test_X[:, split_col:])})
-    # 将测试集标签发送到company方
-    test_y = sf.to(company, test_y)
-    # 将训练集特征和标签发送到company方，再转移到SPU进行秘密共享
-    train_X = sf.to(company, train_X).to(spu)
-    train_y = sf.to(company, train_y).to(spu)
-
-    # 创建SSLR模型实例，使用近似sigmoid函数，训练模型并获取验证集准确率列表
-    model = SSLR(devices, approx=True)
-    accs = model.fit(train_X, train_y, X_test=test_X, y_test=test_y, n_epochs=10, batch_size=1024, val_steps=10, lr=0.1)
-    # 定义模型保存路径
-    paths = {
-        'company': f'SSLR_{dataset}_company',
-        'partner': f'SSLR_{dataset}_partner'
-    }
-    model.save(paths,ext='npy')
-    # 绘制SSLR模型的准确率曲线
-    plt.plot(accs,label = "SSLR",color = "blue")
-
-    # 测试模型加载功能
-    model = SSLR.load({'company': company, 'partner': partner}, paths)
-    # 使用加载的模型进行预测
-    pred_y = model.predict(test_X, test_y.device)  # 测试加载是否成功
-    print(model.score(test_y, pred_y))
-
-    # 揭示测试集和训练集的明文数据，用于sklearn对比
-    test_X = np.hstack([sf.reveal(test_X.partitions[company]), sf.reveal(test_X.partitions[partner])])
-    test_y = sf.reveal(test_y)
-    train_X = sf.reveal(train_X)
-    train_y = sf.reveal(train_y)
-
-    # 对比sklearn的逻辑回归实现
-    from sklearn.linear_model import LogisticRegression
-    model = LogisticRegression(max_iter = 10,penalty=None)
-
-    # 多分类情况下需要将one-hot标签转换为类别索引
-    if num_cat > 1:
-        train_y = train_y.argmax(axis=1)
-
-    # 训练sklearn模型
-    model.fit(train_X,train_y.ravel())
-    # 使用sklearn模型进行预测，并计算准确率
-    y_pred = model.predict(test_X)
-    Accracy = accuracy_score(test_y, y_pred)
-    # 在图中绘制sklearn的准确率基准线
-    plt.axhline(Accracy, 0, len(accs), label="LR sklearn", color = "red",linestyle = "--")
-
-    plt.xlabel("nIter")
-    plt.ylabel("Accuracy")
-    plt.legend()
-    plt.title(f"SSLR_{dataset}")
-    plt.savefig(f"SSLR_{dataset}.png")
-    plt.close()
-
-if __name__ == "__main__":
-    SSLR_test("shop")

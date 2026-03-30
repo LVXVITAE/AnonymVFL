@@ -147,7 +147,7 @@ class MeanSquare:
         """
         Computes the hessian of the mean square loss.
         """
-        return 2 / y_true.shape[0]
+        return (2 / y_true.shape[0]) * jnp.ones_like(y_true)
 
 
 def to_int_labels(logits: np.ndarray):
@@ -188,92 +188,6 @@ def compute_for_metric(y_true: np.ndarray, y_pred: np.ndarray):
     fn = np.sum(positive_mask & pred_negative)
     tn = np.sum(negative_mask & pred_negative)
     return fn / (fn + tn + 1e-8)
-
-# 加载数据集，开发测试用
-
-
-def load_dataset(dataset: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    实现了训练测试集划分以及标签（y）01/独热编码
-    """
-    if dataset == "pima" or dataset == "lbw" or dataset == "pcs" or dataset == "uis":
-        data = pd.read_csv(os.path.join(
-            "Datasets", f"{dataset}.csv")).to_numpy()
-        train_data, test_data = train_test_split(data, shuffle=False)
-        train_X = train_data[:, :-1]
-        train_y = train_data[:, -1].reshape(-1, 1)
-        test_X = test_data[:, :-1]
-        test_y = test_data[:, -1].reshape(-1, 1)
-
-    elif dataset == "gisette" or dataset == "arcene":
-        folder = os.path.join("Datasets", dataset)
-        train_X = np.loadtxt(os.path.join(folder, f"{dataset}_train.data"))
-        train_y = np.loadtxt(os.path.join(folder, f"{dataset}_train.labels"))
-        train_y[train_y == -1] = 0
-        train_y = train_y.reshape(-1, 1)
-        test_X = np.loadtxt(os.path.join(folder, f"{dataset}_valid.data"))
-        test_y = np.loadtxt(os.path.join(folder, f"{dataset}_valid.labels"))
-        test_y[test_y == -1] = 0
-        test_y = test_y.reshape(-1, 1)
-
-    elif dataset == "mnist":
-        from sklearn.datasets import fetch_openml
-        mnist = fetch_openml('mnist_784', version=1, as_frame=False)
-        X = mnist.data
-        y = mnist.target
-        train_X, test_X, train_y, test_y = train_test_split(
-            X, y, shuffle=False)
-        train_y = train_y.astype(int).reshape(-1, 1)
-        from sklearn.preprocessing import OneHotEncoder
-        train_y = OneHotEncoder().fit_transform(train_y).toarray()
-        test_y = test_y.astype(int).reshape(-1, 1)
-
-    elif dataset == "risk":
-        dir_path = os.path.join("Datasets", "data", "data")
-        train = pd.read_csv(os.path.join(dir_path, "risk_assessment_all.csv"))
-        test = pd.read_csv(os.path.join(
-            dir_path, "risk_assessment_all_test.csv"))
-        train_X = train.drop(columns=["id", "y"]).to_numpy()
-        train_y = train["y"].to_numpy().reshape(-1, 1)
-        test_X = test.drop(columns=["id", "y"]).to_numpy()
-        test_y = test["y"].to_numpy().reshape(-1, 1)
-
-    elif dataset == "breast":
-        dir_path = os.path.join("Datasets", "data", "data")
-        guest = pd.read_csv(os.path.join(dir_path, "breast_hetero_guest.csv"))
-        host = pd.read_csv(os.path.join(dir_path, "breast_hetero_host.csv"))
-        all = pd.concat([host, guest], join='inner', axis=1)
-        X = all.drop(columns=["id", "y"]).to_numpy()
-        y = all["y"].to_numpy().reshape(-1, 1)
-        train_X, test_X, train_y, test_y = train_test_split(X, y, shuffle=True)
-
-    elif dataset == "shop":
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        company_train_csv = os.path.join(project_dir, "company", "host_train.csv")
-        company_test_csv = os.path.join(project_dir, "company", "host_test.csv")
-        partner_train_csv = os.path.join(project_dir, "partner", "guest_train.csv")
-        partner_test_csv = os.path.join(project_dir, "partner", "guest_test.csv")
-        company_train = pd.read_csv(company_train_csv)
-        company_test = pd.read_csv(company_test_csv)
-        partner_train = pd.read_csv(partner_train_csv)
-        partner_test = pd.read_csv(partner_test_csv)
-
-        # 取交集 (by id)
-        train_merged = pd.merge(company_train, partner_train, on="id", how="inner").sort_values("id")
-        test_merged = pd.merge(company_test, partner_test, on="id", how="inner").sort_values("id")
-
-        # Company features: columns between id and Revenue (exclusive)
-        company_feat_cols = [c for c in company_train.columns if c not in ("id", "Revenue")]
-        partner_feat_cols = [c for c in partner_train.columns if c != "id"]
-        split_col = len(company_feat_cols)
-
-        train_X = train_merged[company_feat_cols + partner_feat_cols].to_numpy(dtype=np.float32)
-        train_y = train_merged["Revenue"].to_numpy(dtype=np.float32).reshape(-1, 1)
-        test_X = test_merged[company_feat_cols + partner_feat_cols].to_numpy(dtype=np.float32)
-        test_y = test_merged["Revenue"].to_numpy(dtype=np.float32).reshape(-1, 1)
-
-    return train_X, train_y, test_X, test_y
-
 
 def Singleton(cls):  # 这是一个函数，目的是要实现一个“装饰器”，而且是对类型的装饰器
     '''

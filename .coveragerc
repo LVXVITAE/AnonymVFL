@@ -1,0 +1,12 @@
+[run]
+source = company
+parallel = true
+concurrency = multiprocessing
+
+[paths]
+source =
+    company/
+    */company/
+
+[report]
+show_missing = true
