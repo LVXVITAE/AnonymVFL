@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # === B = partner (worker 节点) ===
-A_IP="210.28.133.104"
+A_IP="192.168.1.23"
 PORT_RAY="20001"
 
 cd "$(dirname "$0")"

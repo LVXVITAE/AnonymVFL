@@ -12,13 +12,26 @@
 
 set -e
 
-# ---------- 配置区 ----------
-RAY_HEAD_IP="${1:-MACHINE_A_IP}"       # ← 替换或通过参数传入 Machine A 的 IP
-RAY_HEAD_PORT="${2:-20001}"            # ← Ray head 端口
-PARTNER_SPU_PORT="${3:-9395}"          # ← Partner SPU 监听端口
+# ---------- 从 distributed_config.yaml 自动解析配置 ----------
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG="${SCRIPT_DIR}/distributed_config.yaml"
 
-NUM_CPUS="${4:-8}"
-OBJECT_STORE_MEMORY="${5:-2000000000}" # 2 GB
+if [ ! -f "${CONFIG}" ]; then
+    echo "❌ 找不到配置文件: ${CONFIG}"
+    exit 1
+fi
+
+RAY_HEAD_IP=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ip'])")
+RAY_HEAD_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_port'])")
+PARTNER_IP=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_b']['ip'])")
+PARTNER_SPU_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_b']['partner_spu_port'])")
+NUM_CPUS=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['ray']['num_cpus'])")
+OBJECT_STORE_MEMORY=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['ray']['object_store_memory'])")
+
+# 允许命令行参数覆盖
+RAY_HEAD_IP="${1:-${RAY_HEAD_IP}}"
+RAY_HEAD_PORT="${2:-${RAY_HEAD_PORT}}"
+PARTNER_IP="${3:-${PARTNER_IP}}"
 
 RAY_HEAD_ADDR="${RAY_HEAD_IP}:${RAY_HEAD_PORT}"
 # ---------- 配置区结束 ----------
@@ -27,6 +40,7 @@ echo "======================================"
 echo " AnonymVFL Partner Worker 启动脚本"
 echo "======================================"
 echo " Ray Head 地址: ${RAY_HEAD_ADDR}"
+echo " Partner 本机 IP: ${PARTNER_IP}"
 echo " Partner SPU 端口: ${PARTNER_SPU_PORT}"
 echo " CPU 数量: ${NUM_CPUS}"
 echo "======================================"
@@ -38,6 +52,7 @@ ray stop --force 2>/dev/null || true
 echo "[1/2] 加入 Ray 集群..."
 ray start \
     --address="${RAY_HEAD_ADDR}" \
+    --node-ip-address="${PARTNER_IP}" \
     --num-cpus="${NUM_CPUS}" \
     --object-store-memory="${OBJECT_STORE_MEMORY}" \
     --resources='{"partner": 10}' \

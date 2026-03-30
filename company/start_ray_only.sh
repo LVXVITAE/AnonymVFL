@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # === 只启动 Ray head，不运行训练 ===
-A_IP="210.28.133.104"
+A_IP="192.168.1.23"
 PORT_RAY="20001"
 
 cd "$(dirname "$0")"
@@ -11,7 +11,7 @@ echo "正在启动Ray集群..."
 
 # 启动 Ray head（只打 company/coordinator 资源）
 ray start --head --node-ip-address "${A_IP}" --port "${PORT_RAY}" \
-  --num-cpus 8 \
+  --num-cpus 16 \
   --resources='{"company": 10, "coordinator": 10}' \
   --object-store-memory=2000000000
 

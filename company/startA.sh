@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # === A = company + coordinator (head 节点) ===
-A_IP="210.28.133.104"
-B_IP="210.28.133.104"   # 同机模拟时也用 127.0.0.1 或本机 IP
+A_IP="192.168.1.23"
+B_IP="192.168.1.12"   # 同机模拟时也用 127.0.0.1 或本机 IP
 PORT_RAY="20001"
 PORT_COMPANY_SPU="11001"
 PORT_PARTNER_SPU="11002"
