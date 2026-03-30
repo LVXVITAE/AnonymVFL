@@ -18,6 +18,10 @@ fi
 # 从 YAML 中解析配置 (兼容无 yq 的环境)
 A_IP=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ip'])")
 RAY_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_port'])")
+OBJ_MGR_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a'].get('object_manager_port', 0))")
+NODE_MGR_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a'].get('node_manager_port', 0))")
+MIN_WORKER_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a'].get('min_worker_port', 0))")
+MAX_WORKER_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a'].get('max_worker_port', 0))")
 NUM_CPUS=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['ray']['num_cpus'])")
 OBJ_STORE=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['ray']['object_store_memory'])")
 COMPANY_RES=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_resources']['company'])")
@@ -28,6 +32,9 @@ echo " AnonymVFL Ray Head 启动脚本"
 echo "======================================"
 echo " Node IP:          ${A_IP}"
 echo " Ray Port:         ${RAY_PORT}"
+echo " Object Mgr Port:  ${OBJ_MGR_PORT}"
+echo " Node Mgr Port:    ${NODE_MGR_PORT}"
+echo " Worker Ports:     ${MIN_WORKER_PORT}-${MAX_WORKER_PORT}"
 echo " CPUs:             ${NUM_CPUS}"
 echo " Object Store:     ${OBJ_STORE}"
 echo " Resources:        company=${COMPANY_RES}, coordinator=${COORD_RES}"
@@ -37,6 +44,21 @@ echo "======================================"
 ray stop --force 2>/dev/null || true
 sleep 1
 
+# 构建可选端口参数
+PORT_ARGS=""
+if [ "${OBJ_MGR_PORT}" != "0" ]; then
+    PORT_ARGS="${PORT_ARGS} --object-manager-port=${OBJ_MGR_PORT}"
+fi
+if [ "${NODE_MGR_PORT}" != "0" ]; then
+    PORT_ARGS="${PORT_ARGS} --node-manager-port=${NODE_MGR_PORT}"
+fi
+if [ "${MIN_WORKER_PORT}" != "0" ]; then
+    PORT_ARGS="${PORT_ARGS} --min-worker-port=${MIN_WORKER_PORT}"
+fi
+if [ "${MAX_WORKER_PORT}" != "0" ]; then
+    PORT_ARGS="${PORT_ARGS} --max-worker-port=${MAX_WORKER_PORT}"
+fi
+
 # 启动 Ray head
 echo "[1/3] 启动 Ray head..."
 ray start --head \
@@ -44,7 +66,9 @@ ray start --head \
     --port="${RAY_PORT}" \
     --num-cpus="${NUM_CPUS}" \
     --resources="{\"company\": ${COMPANY_RES}, \"coordinator\": ${COORD_RES}}" \
-    --object-store-memory="${OBJ_STORE}"
+    --object-store-memory="${OBJ_STORE}" \
+    --system-config='{"max_direct_call_object_size": 104857600, "task_rpc_inlined_bytes_limit": 104857600}' \
+    ${PORT_ARGS}
 
 echo "[2/3] 等待 GCS 服务就绪..."
 MAX_RETRIES=10

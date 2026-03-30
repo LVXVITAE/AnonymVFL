@@ -16,6 +16,7 @@
 """
 import os
 import time
+import tracemalloc
 import pytest
 import yaml
 import numpy as np
@@ -38,10 +39,15 @@ def _load_distributed_config():
 
 
 def _build_cluster_def(cfg):
-    """从 distributed_config.yaml 构建 SecretFlow cluster_def."""
+    """从 distributed_config.yaml 构建 SecretFlow cluster_def 和 link_desc.
+
+    Returns (cluster_def, link_desc) — link_desc must be passed as a
+    **separate** keyword argument to ``sf.SPU()``.
+    """
     a = cfg["machine_a"]
     b = cfg["machine_b"]
-    return {
+    link_cfg = cfg.get("link_desc", {})
+    cluster_def = {
         "nodes": [
             {
                 "party": "company",
@@ -61,6 +67,12 @@ def _build_cluster_def(cfg):
         ],
         "runtime_config": {"protocol": 3, "field": 3},
     }
+    link_desc = {
+        "connect_retry_times": link_cfg.get("connect_retry_times", 60),
+        "connect_retry_interval_ms": link_cfg.get("connect_retry_interval_ms", 2000),
+        "recv_timeout_ms": link_cfg.get("recv_timeout_ms", 300000),
+    }
+    return cluster_def, link_desc
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +81,15 @@ def _build_cluster_def(cfg):
 
 @pytest.fixture(scope="module")
 def distributed_env():
-    """初始化 multi_distributed 环境.
+    """初始化 multi_distributed 环境 (通过 MPCInitializer).
 
-    如果配置文件中 IP 仍为占位符, 退化为 single_sim 模式并发出警告.
+    使用 MPCInitializer 初始化 SPU / PYU / HEU 设备,
+    以支持 PSI 等需要 HEU 的性能测试.
+
+    如果配置文件中 IP 仍为占位符, 跳过测试.
     """
+    from common import MPCInitializer
+
     cfg = _load_distributed_config()
     is_placeholder = "MACHINE" in cfg["machine_a"]["ip"] or "MACHINE" in cfg["machine_b"]["ip"]
 
@@ -87,15 +104,27 @@ def distributed_env():
     except Exception:
         pass
 
-    from common import MPCInitializer
-    cluster_def = _build_cluster_def(cfg)
+    cluster_def, link_desc = _build_cluster_def(cfg)
     ray_addr = f"{cfg['machine_a']['ip']}:{cfg['machine_a']['ray_port']}"
+
+    # Ensure Ray workers can import company/ modules.
+    company_dir = os.path.join(os.path.dirname(TESTS_DIR), "company")
+    runtime_env = {"env_vars": {"PYTHONPATH": company_dir}}
+
     mpc = MPCInitializer(
-        mode="multi_distributed",
+        mode='multi_distributed',
         ray_head_addr=ray_addr,
         cluster_def=cluster_def,
+        link_desc=link_desc,
+        runtime_env=runtime_env,
     )
-    yield mpc, cfg
+
+    env = type("Env", (), {
+        "spu": mpc.spu, "company": mpc.company,
+        "partner": mpc.partner, "coordinator": mpc.coordinator,
+        "company_heu": mpc.company_heu, "partner_heu": mpc.partner_heu,
+    })()
+    yield env, cfg
     try:
         sf.shutdown()
     except Exception:
@@ -104,12 +133,14 @@ def distributed_env():
 
 @pytest.fixture(scope="module")
 def perf_devices(distributed_env):
-    mpc, _ = distributed_env
+    env, _ = distributed_env
     return {
-        "spu": mpc.spu,
-        "company": mpc.company,
-        "partner": mpc.partner,
-        "coordinator": mpc.coordinator,
+        "spu": env.spu,
+        "company": env.company,
+        "partner": env.partner,
+        "coordinator": env.coordinator,
+        "company_heu": env.company_heu,
+        "partner_heu": env.partner_heu,
     }
 
 
@@ -130,6 +161,96 @@ def _gen_data(n_samples, n_features=18, seed=42):
     w = rng.randn(n_features, 1).astype(np.float32)
     y = (1.0 / (1.0 + np.exp(-(X @ w))) > 0.5).astype(np.float32)
     return X, y
+
+
+def _gen_psi_data(n_company, n_partner, n_features=20, overlap_ratio=0.5, seed=42):
+    """生成 PSI 性能测试用的合成数据.
+
+    每方各持有 n_features//2 维私有特征, 无公开特征.
+    overlap_ratio 控制两方 key 的交集比例.
+    """
+    rng = np.random.RandomState(seed)
+    n_overlap = int(min(n_company, n_partner) * overlap_ratio)
+    shared_ids = list(range(n_overlap))
+    company_only = list(range(n_overlap, n_overlap + n_company - n_overlap))
+    partner_only = list(range(n_overlap + n_company - n_overlap,
+                              n_overlap + n_company - n_overlap + n_partner - n_overlap))
+
+    company_keys = [str(k) for k in (shared_ids + company_only)]
+    partner_keys = [str(k) for k in (shared_ids + partner_only)]
+    rng.shuffle(company_keys)
+    rng.shuffle(partner_keys)
+
+    half = n_features // 2
+    company_features = rng.randn(n_company, half).astype(np.float32)
+    partner_features = rng.randn(n_partner, half).astype(np.float32)
+
+    return company_keys, company_features, partner_keys, partner_features
+
+
+# ---------------------------------------------------------------------------
+# TP0: PSI 不同样本量对齐时间
+# ---------------------------------------------------------------------------
+
+class TestPSIScalability:
+
+    SAMPLE_SIZES = [1000, 5000, 10000, 50000, 100000]
+
+    @pytest.mark.parametrize("n_samples", SAMPLE_SIZES)
+    def test_psi_alignment_time(self, perf_devices, perf_results_dir, n_samples):
+        """记录 PSI 在不同样本量下的对齐时间、内存占用"""
+        from PSI import private_set_intersection
+
+        company = perf_devices["company"]
+        partner = perf_devices["partner"]
+        company_heu = perf_devices["company_heu"]
+        partner_heu = perf_devices["partner_heu"]
+        heu_devices = (company_heu, partner_heu)
+
+        company_keys, company_features, partner_keys, partner_features = \
+            _gen_psi_data(n_samples, n_samples, n_features=20)
+
+        company_data = company(
+            lambda k, f: (k, f, None))(company_keys, company_features)
+        partner_data = partner(
+            lambda k, f: (k, f, None))(partner_keys, partner_features)
+
+        tracemalloc.start()
+        t0 = time.time()
+        R_cI, R_pI, bucket_labels = private_set_intersection(
+            company_data, partner_data, heu_devices)
+        # Materialize results to ensure timing is accurate.
+        sf.reveal(R_cI)
+        sf.reveal(R_pI)
+        elapsed = time.time() - t0
+        _, peak_mem = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        record = {
+            "样本数量": n_samples,
+            "对齐时间(s)": round(elapsed, 2),
+            "内存峰值(MB)": round(peak_mem / 1024 / 1024, 2),
+        }
+
+        csv_path = os.path.join(perf_results_dir, "psi_scalability.csv")
+        import pandas as pd
+        df = pd.DataFrame([record])
+        df.to_csv(csv_path, mode="a", header=not os.path.exists(csv_path), index=False)
+
+    def test_psi_scalability_plot(self, perf_results_dir):
+        """读取 CSV 结果并绘图"""
+        from plot_utils import plot_time_vs_samples
+        import pandas as pd
+
+        csv_path = os.path.join(perf_results_dir, "psi_scalability.csv")
+        if not os.path.exists(csv_path):
+            pytest.skip("No PSI scalability data yet")
+
+        records = pd.read_csv(csv_path).to_dict("records")
+        png_path = os.path.join(perf_results_dir, "psi_scalability.png")
+        plot_time_vs_samples(records, "PSI 对齐时间 vs 样本数量", png_path,
+                             y_key="对齐时间(s)")
+        assert os.path.exists(png_path)
 
 
 # ---------------------------------------------------------------------------
