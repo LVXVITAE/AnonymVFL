@@ -153,7 +153,8 @@ class SSLR(SSML):
         def grad_desc(lambda_, w : jnp.ndarray, X : jnp.ndarray, grad : jnp.ndarray):
             batch_size = X.shape[0]
             # 权重更新公式：w = (1-lambda)*w - lr/batch_size * X^T * grad
-            return (1 - lambda_) * w - (lr/batch_size) * (X.transpose() @ grad)
+            stp = lr / batch_size
+            return (1 - lambda_ * stp) * w - stp * (X.transpose() @ grad)
         # 在SPU上执行梯度下降更新权重
         self.w = self.spu(grad_desc)(self.lambda_, self.w, X, grad)
 
