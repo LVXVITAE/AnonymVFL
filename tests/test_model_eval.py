@@ -200,7 +200,7 @@ class TestBreastCancerSSLR:
         )
         test_y = sf.to(company, d["test_y"])
 
-        model = SSLR(devices, approx=True, lambda_=0.01)
+        model = SSLR(devices, approx=True, lambda_=0.1)
         accs = model.fit(
             train_X, train_y,
             X_test=test_X, y_test=test_y,
@@ -245,7 +245,7 @@ class TestBreastCancerSSLR:
         )
         test_y = sf.to(company, d["test_y"])
 
-        model = SSLR(devices, approx=False, lambda_=0.01)
+        model = SSLR(devices, approx=False, lambda_=0.1)
         accs = model.fit(
             train_X, train_y,
             X_test=test_X, y_test=test_y,
@@ -394,7 +394,7 @@ class TestSklearnBaselines:
         from sklearn.linear_model import LogisticRegression
 
         d = breast_cancer_data
-        lr = LogisticRegression(max_iter=20, C=100.0, random_state=42)
+        lr = LogisticRegression(max_iter=20, C=10.0, random_state=42)
         lr.fit(d["train_X_std"], d["train_y"].ravel())
         y_pred = lr.predict(d["test_X_std"])
         y_prob = lr.predict_proba(d["test_X_std"])[:, 1]
