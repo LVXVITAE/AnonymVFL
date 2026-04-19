@@ -12,6 +12,7 @@ from common import approx_sigmoid, sigmoid, softmax, compute_accuracy, compute_f
 # 导入安全共享机器学习基类
 from common import SSML
 import os, json
+import time
 import matplotlib.pyplot as plt
 
 
@@ -238,6 +239,9 @@ class SSLR(SSML):
         # 用于存储分批数据的列表
         Xs = []
         ys = []
+        # 记录分阶段耗时，供外部测试区分“分batch时间”和“纯训练循环时间”
+        self.last_fit_batch_prepare_seconds = 0.0
+        self.last_fit_train_loop_seconds = 0.0
         # 判断是否进行验证
         validate = X_test is not None and y_test is not None
         if validate:
@@ -246,6 +250,7 @@ class SSLR(SSML):
         if not self.approx:
             assert y.device != self.spu, "When approx is False, y must not be on SPU"
         # 将数据按batch分割
+        _batch_t0 = time.time()
         for j in trange(0,num_samples,batch_size):
             batch = min(batch_size,num_samples - j)
             keys = np.arange(j, j + batch)
@@ -255,6 +260,7 @@ class SSLR(SSML):
             y_batch = self.train_label_keeper(spu_get_item, static_argnames=['keys'])(y, keys)
             Xs.append(X_batch)
             ys.append(y_batch)
+        self.last_fit_batch_prepare_seconds = time.time() - _batch_t0
         # 初始化训练步数计数器
         steps = 1
         # 用于记录评估指标的列表
@@ -267,6 +273,7 @@ class SSLR(SSML):
         finalfOr = 0
     
         # 开始训练循环
+        _train_t0 = time.time()
         for t in range(1,n_epochs + 1):
             print(f"Epoch {t}")
             for X,y in tqdm((zip(Xs, ys))):
@@ -309,6 +316,7 @@ class SSLR(SSML):
                             finalfOr = fOr
                     print(f"Step {steps}, Accuracy: {acc:.4f}, F1: {f1:.4f}, FOR: {fOr:.4f}")
                 steps += 1
+                self.last_fit_train_loop_seconds = time.time() - _train_t0
 
         # 训练完成后分发权重到各方
         self.w = self.dispatch_weight()

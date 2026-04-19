@@ -21,7 +21,7 @@ machine_a:
     coordinator: 10
 
 machine_b:
-  ip: "192.168.1.3"               # ← 替换为远程 Partner 机器 IP (如 192.168.1.101)
+  ip: "192.168.1.17"               # ← 替换为远程 Partner 机器 IP (如 192.168.1.101)
   partner_spu_port: 9395           # Partner SPU 端口
   ray_resources:
     partner: 10

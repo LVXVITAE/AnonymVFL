@@ -23,6 +23,56 @@ import numpy as np
 import secretflow as sf
 from secretflow.data.ndarray import load, PartitionWay
 
+
+def _get_net_bytes():
+    """获取系统累计网络收发字节数（尽量排除 lo 回环接口）."""
+    try:
+        import psutil
+
+        net = psutil.net_io_counters(pernic=True)
+        tx = 0
+        rx = 0
+        for nic, counters in net.items():
+            if nic == "lo":
+                continue
+            tx += int(counters.bytes_sent)
+            rx += int(counters.bytes_recv)
+        # Fallback: if no NIC matched, use aggregate counters.
+        if tx == 0 and rx == 0:
+            all_net = psutil.net_io_counters(pernic=False)
+            tx = int(all_net.bytes_sent)
+            rx = int(all_net.bytes_recv)
+        return tx, rx
+    except Exception:
+        # /proc/net/dev fallback to avoid hard dependency on psutil.
+        tx = 0
+        rx = 0
+        try:
+            with open("/proc/net/dev", "r", encoding="utf-8") as f:
+                lines = f.readlines()[2:]
+            for line in lines:
+                left, right = line.split(":", 1)
+                nic = left.strip()
+                if nic == "lo":
+                    continue
+                fields = right.split()
+                if len(fields) >= 9:
+                    rx += int(fields[0])
+                    tx += int(fields[8])
+        except Exception:
+            return 0, 0
+        return tx, rx
+
+
+def _run_with_comm_measure(task):
+    """执行任务并返回 (result, elapsed_seconds, tx_delta_bytes, rx_delta_bytes)."""
+    tx0, rx0 = _get_net_bytes()
+    t0 = time.time()
+    result = task()
+    elapsed = time.time() - t0
+    tx1, rx1 = _get_net_bytes()
+    return result, elapsed, max(0, tx1 - tx0), max(0, rx1 - rx0)
+
 pytestmark = pytest.mark.performance
 
 # ---------------------------------------------------------------------------
@@ -200,7 +250,7 @@ class TestPSIScalability:
         heu_devices = (company_heu, partner_heu)
 
         company_keys, company_features, partner_keys, partner_features = \
-            _gen_psi_data(n_samples, n_samples, n_features=20)
+            _gen_psi_data(n_samples, n_samples, n_features=18)
 
         company_data = company(
             lambda k, f: (k, f, None))(company_keys, company_features)
@@ -208,13 +258,16 @@ class TestPSIScalability:
             lambda k, f: (k, f, None))(partner_keys, partner_features)
 
         tracemalloc.start()
-        t0 = time.time()
-        R_cI, R_pI, bucket_labels = private_set_intersection(
-            company_data, partner_data, heu_devices)
-        # Materialize results to ensure timing is accurate.
-        sf.reveal(R_cI)
-        sf.reveal(R_pI)
-        elapsed = time.time() - t0
+
+        def _task():
+            R_cI, R_pI, _ = private_set_intersection(
+                company_data, partner_data, heu_devices
+            )
+            # Materialize results to ensure timing is accurate.
+            sf.reveal(R_cI)
+            sf.reveal(R_pI)
+
+        _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(_task)
         _, peak_mem = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
@@ -222,6 +275,9 @@ class TestPSIScalability:
             "样本数量": n_samples,
             "对齐时间(s)": round(elapsed, 2),
             "内存峰值(MB)": round(peak_mem / 1024 / 1024, 2),
+            "发送通信量(MB)": round(tx_bytes / 1024 / 1024, 4),
+            "接收通信量(MB)": round(rx_bytes / 1024 / 1024, 4),
+            "总通信量(MB)": round((tx_bytes + rx_bytes) / 1024 / 1024, 4),
         }
 
         csv_path = os.path.join(perf_results_dir, "psi_scalability.csv")
@@ -277,10 +333,18 @@ class TestSSLRScalability:
 
         model = SSLR(perf_devices, approx=True)
 
-        t0 = time.time()
-        model.fit(train_X, train_y, X_test=test_X, y_test=test_y,
-                  n_epochs=3, batch_size=128, val_steps=99999, lr=0.1)
-        elapsed = time.time() - t0
+        _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
+            lambda: model.fit(
+                train_X,
+                train_y,
+                X_test=test_X,
+                y_test=test_y,
+                n_epochs=3,
+                batch_size=128,
+                val_steps=99999,
+                lr=0.1,
+            )
+        )
 
         record = {
             "模型": "SSLR",
@@ -289,6 +353,9 @@ class TestSSLRScalability:
             "batch_size": 128,
             "n_epochs": 3,
             "总时间(s)": round(elapsed, 2),
+            "发送通信量(MB)": round(tx_bytes / 1024 / 1024, 4),
+            "接收通信量(MB)": round(rx_bytes / 1024 / 1024, 4),
+            "总通信量(MB)": round((tx_bytes + rx_bytes) / 1024 / 1024, 4),
         }
 
         # 追加到 CSV
@@ -344,16 +411,27 @@ class TestBatchSizeImpact:
 
         model = SSLR(perf_devices, approx=True)
 
-        t0 = time.time()
-        model.fit(train_X, train_y, X_test=test_X, y_test=test_y,
-                  n_epochs=3, batch_size=batch_size, val_steps=99999, lr=0.1)
-        elapsed = time.time() - t0
+        _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
+            lambda: model.fit(
+                train_X,
+                train_y,
+                X_test=test_X,
+                y_test=test_y,
+                n_epochs=3,
+                batch_size=batch_size,
+                val_steps=99999,
+                lr=0.1,
+            )
+        )
 
         record = {
             "批次大小": batch_size,
             "样本数量": n_samples,
             "n_epochs": 3,
             "总训练时间(s)": round(elapsed, 2),
+            "发送通信量(MB)": round(tx_bytes / 1024 / 1024, 4),
+            "接收通信量(MB)": round(rx_bytes / 1024 / 1024, 4),
+            "总通信量(MB)": round((tx_bytes + rx_bytes) / 1024 / 1024, 4),
         }
 
         csv_path = os.path.join(perf_results_dir, "batch_size_impact.csv")
@@ -407,9 +485,9 @@ class TestSSXGBoostScalability:
 
         model = SSXGBoost(perf_devices, n_estimators=3, max_depth=3)
 
-        t0 = time.time()
-        model.fit(train_X, train_y, buckets, FedQuantiles)
-        elapsed = time.time() - t0
+        _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
+            lambda: model.fit(train_X, train_y, buckets, FedQuantiles)
+        )
 
         record = {
             "模型": "SSXGBoost",
@@ -417,6 +495,9 @@ class TestSSXGBoostScalability:
             "n_estimators": 3,
             "max_depth": 3,
             "总时间(s)": round(elapsed, 2),
+            "发送通信量(MB)": round(tx_bytes / 1024 / 1024, 4),
+            "接收通信量(MB)": round(rx_bytes / 1024 / 1024, 4),
+            "总通信量(MB)": round((tx_bytes + rx_bytes) / 1024 / 1024, 4),
         }
 
         csv_path = os.path.join(perf_results_dir, "xgboost_scalability.csv")
@@ -478,16 +559,19 @@ class TestLRInferenceLatency:
             partition_way=PartitionWay.VERTICAL,
         )
 
-        # 推理计时
-        t0 = time.time()
-        trained_sslr.predict(test_X, company)
-        elapsed = time.time() - t0
+        # 推理计时 + 通信量统计
+        _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
+            lambda: trained_sslr.predict(test_X, company)
+        )
 
         record = {
             "模型": "SSLR",
             "样本数量": n_samples,
             "推理延迟(s)": round(elapsed, 4),
             "单样本平均延迟(ms)": round(elapsed / n_samples * 1000, 4),
+            "发送通信量(MB)": round(tx_bytes / 1024 / 1024, 4),
+            "接收通信量(MB)": round(rx_bytes / 1024 / 1024, 4),
+            "总通信量(MB)": round((tx_bytes + rx_bytes) / 1024 / 1024, 4),
         }
 
         csv_path = os.path.join(perf_results_dir, "lr_inference_latency.csv")
@@ -515,7 +599,7 @@ class TestLRInferenceLatency:
 
 class TestQuantileImpact:
 
-    K_VALUES = [10, 20, 30, 40, 50]
+    K_VALUES = [5, 10, 20, 30, 40, 50]
 
     @pytest.mark.parametrize("k", K_VALUES)
     def test_quantile_effect(self, perf_devices, perf_results_dir, k):
@@ -544,9 +628,9 @@ class TestQuantileImpact:
 
         model = SSXGBoost(perf_devices, n_estimators=3, max_depth=3)
 
-        t0 = time.time()
-        model.fit(train_X, train_y, buckets, FedQuantiles)
-        elapsed = time.time() - t0
+        _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
+            lambda: model.fit(train_X, train_y, buckets, FedQuantiles)
+        )
 
         record = {
             "分位点数量k": k,
@@ -554,6 +638,9 @@ class TestQuantileImpact:
             "n_estimators": 3,
             "max_depth": 3,
             "总训练时间(s)": round(elapsed, 2),
+            "发送通信量(MB)": round(tx_bytes / 1024 / 1024, 4),
+            "接收通信量(MB)": round(rx_bytes / 1024 / 1024, 4),
+            "总通信量(MB)": round((tx_bytes + rx_bytes) / 1024 / 1024, 4),
         }
 
         csv_path = os.path.join(perf_results_dir, "quantile_impact.csv")
@@ -626,15 +713,18 @@ class TestXGBoostInferenceLatency:
             partition_way=PartitionWay.VERTICAL,
         )
 
-        t0 = time.time()
-        trained_xgb.predict(test_X, company)
-        elapsed = time.time() - t0
+        _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
+            lambda: trained_xgb.predict(test_X, company)
+        )
 
         record = {
             "模型": "SSXGBoost",
             "样本数量": n_samples,
             "推理延迟(s)": round(elapsed, 4),
             "单样本平均延迟(ms)": round(elapsed / n_samples * 1000, 4),
+            "发送通信量(MB)": round(tx_bytes / 1024 / 1024, 4),
+            "接收通信量(MB)": round(rx_bytes / 1024 / 1024, 4),
+            "总通信量(MB)": round((tx_bytes + rx_bytes) / 1024 / 1024, 4),
         }
 
         csv_path = os.path.join(perf_results_dir, "xgboost_inference_latency.csv")

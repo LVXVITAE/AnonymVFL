@@ -113,6 +113,84 @@ def california_housing_data():
     }
 
 
+@pytest.fixture(scope="module")
+def gisette_data(project_root):
+    """加载 Gisette 数据集 (tests/GISETTE/), 按 8:1:1 划分, 特征纵向分割并标准化."""
+    import os
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import StandardScaler
+
+    data_dir = os.path.join(project_root, "tests", "GISETTE")
+    X_train_raw = np.loadtxt(os.path.join(data_dir, "gisette_train.data")).astype(np.float32)
+    y_train_raw = np.loadtxt(os.path.join(data_dir, "gisette_train.labels")).astype(np.int32)
+    X_valid_raw = np.loadtxt(os.path.join(data_dir, "gisette_valid.data")).astype(np.float32)
+    y_valid_raw = np.loadtxt(os.path.join(data_dir, "gisette_valid.labels")).astype(np.int32)
+
+    X = np.vstack([X_train_raw, X_valid_raw])
+    # Labels are -1/+1; convert to 0/1
+    y = ((np.concatenate([y_train_raw, y_valid_raw]) + 1) // 2).astype(np.float32)
+
+    X_train, X_rest, y_train, y_rest = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    X_co_uniq, X_po_uniq, y_co, y_po = train_test_split(
+        X_rest, y_rest, test_size=0.5, random_state=42, stratify=y_rest
+    )
+    X_test = np.vstack([X_co_uniq, X_po_uniq])
+    y_test = np.concatenate([y_co, y_po])
+
+    split_col = X.shape[1] // 2
+
+    scaler = StandardScaler()
+    X_train_std = scaler.fit_transform(X_train).astype(np.float32)
+    X_test_std = scaler.transform(X_test).astype(np.float32)
+
+    return {
+        "train_X_std": X_train_std,
+        "train_y": y_train.reshape(-1, 1),
+        "test_X_std": X_test_std,
+        "test_y": y_test.reshape(-1, 1),
+        "split_col": split_col,
+        "name": "Gisette",
+    }
+
+
+@pytest.fixture(scope="module")
+def adult_data(project_root):
+    """加载 Adult 数据集 (tests/adult.npy), 第一列标签, 其余特征做 min-max 标准化."""
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import MinMaxScaler
+
+    npy_path = os.path.join(project_root, "tests", "adult.npy")
+    raw = np.load(npy_path)
+    X = raw[:, 1:].astype(np.float32)
+    y = raw[:, 0].astype(np.float32)
+
+    X_train, X_rest, y_train, y_rest = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    X_co_uniq, X_po_uniq, y_co, y_po = train_test_split(
+        X_rest, y_rest, test_size=0.5, random_state=42, stratify=y_rest
+    )
+    X_test = np.vstack([X_co_uniq, X_po_uniq])
+    y_test = np.concatenate([y_co, y_po])
+
+    scaler = MinMaxScaler()
+    X_train_mm = scaler.fit_transform(X_train).astype(np.float32)
+    X_test_mm = scaler.transform(X_test).astype(np.float32)
+
+    split_col = X.shape[1] // 2
+
+    return {
+        "train_X_mm": X_train_mm,
+        "train_y": y_train.reshape(-1, 1),
+        "test_X_mm": X_test_mm,
+        "test_y": y_test.reshape(-1, 1),
+        "split_col": split_col,
+        "name": "Adult",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Metric helpers
 # ---------------------------------------------------------------------------
@@ -141,6 +219,13 @@ def _compute_regression_metrics(y_true, y_pred):
         "MSE": mean_squared_error(y_true.flatten(), y_pred.flatten()),
         "R2": r2_score(y_true.flatten(), y_pred.flatten()),
     }
+
+
+def _compute_binary_auc(y_true, y_prob):
+    """计算二分类 AUC."""
+    from sklearn.metrics import roc_auc_score
+
+    return roc_auc_score(y_true.flatten(), y_prob.flatten())
 
 
 def _plot_regression_comparison(results, dataset_name, png_path):
@@ -270,6 +355,65 @@ class TestBreastCancerSSLR:
         assert metrics["准确率"] > 0.5, f"精确SSLR accuracy too low: {metrics['准确率']}"
 
 
+class TestGisetteSSLR:
+
+    @pytest.mark.slow
+    def test_approx_sslr_gisette(self, devices, gisette_data, eval_results_dir):
+        """近似SSLR: Gisette 二分类, 测量 ACC."""
+        from LR import SSLR
+
+        company = devices["company"]
+        partner = devices["partner"]
+        spu = devices["spu"]
+        d = gisette_data
+        sc = d["split_col"]
+
+        train_X = sf.to(company, d["train_X_std"]).to(spu)
+        train_y = sf.to(company, d["train_y"]).to(spu)
+
+        test_X = load(
+            {
+                company: sf.to(company, d["test_X_std"][:, :sc]),
+                partner: sf.to(partner, d["test_X_std"][:, sc:]),
+            },
+            partition_way=PartitionWay.VERTICAL,
+        )
+        test_y = sf.to(company, d["test_y"])
+
+        model = SSLR(devices, approx=True, lambda_=0.1)
+        accs = model.fit(
+            train_X,
+            train_y,
+            X_test=test_X,
+            y_test=test_y,
+            n_epochs=20,
+            batch_size=128,
+            val_steps=5,
+            lr=0.1,
+        )
+
+        from plot_utils import plot_training_curve
+        plot_training_curve(
+            list(range(len(accs))),
+            accs,
+            None,
+            ylabel="准确率",
+            title="近似SSLR 训练曲线 (Gisette)",
+            png_path=os.path.join(eval_results_dir, "approx_sslr_gisette_curve.png"),
+        )
+
+        y_pred = sf.reveal(model.predict(test_X, company))
+        metrics = _compute_classification_metrics(d["test_y"], y_pred)
+        metrics["训练最优ACC"] = max(accs) if accs else metrics["准确率"]
+        metrics["方法"] = "近似SSLR"
+        metrics["数据集"] = "Gisette"
+
+        csv_path = os.path.join(eval_results_dir, "approx_sslr_gisette_metrics.csv")
+        pd.DataFrame([metrics]).to_csv(csv_path, index=False)
+
+        assert metrics["准确率"] > 0.5, f"Gisette 近似SSLR accuracy too low: {metrics['准确率']}"
+
+
 # ---------------------------------------------------------------------------
 # Breast Cancer — SSXGBoost evaluation
 # ---------------------------------------------------------------------------
@@ -381,6 +525,58 @@ class TestCaliforniaHousingSSXGBoost:
 
         csv_path = os.path.join(eval_results_dir, "ssxgboost_housing_metrics.csv")
         pd.DataFrame([metrics]).to_csv(csv_path, index=False)
+
+
+class TestAdultSSXGBoost:
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("max_depth", [3, 4, 5])
+    def test_ssxgboost_adult_binary(self, devices, adult_data, eval_results_dir, max_depth):
+        """SSXGBoost 二分类: Adult (min-max), 深度 3/4/5, 测量 ACC/F1/AUC."""
+        from XGBoost import SSXGBoost, quantize_buckets, recover_buckets
+
+        company = devices["company"]
+        partner = devices["partner"]
+        spu = devices["spu"]
+        d = adult_data
+        sc = d["split_col"]
+
+        Q1, _, bl1 = quantize_buckets(d["train_X_mm"][:, :sc], k=9)
+        Q2, _, bl2 = quantize_buckets(d["train_X_mm"][:, sc:], k=9)
+        buckets = recover_buckets(np.hstack((bl1, bl2)))
+        FedQuantiles = load(
+            {company: sf.to(company, Q1), partner: sf.to(partner, Q2)},
+            partition_way=PartitionWay.HORIZONTAL,
+        )
+
+        train_X = sf.to(company, d["train_X_mm"].astype(np.float32)).to(spu)
+        train_y = sf.to(company, d["train_y"].astype(np.float32))
+
+        test_X = load(
+            {
+                company: sf.to(company, d["test_X_mm"][:, :sc].astype(np.float32)),
+                partner: sf.to(partner, d["test_X_mm"][:, sc:].astype(np.float32)),
+            },
+            partition_way=PartitionWay.VERTICAL,
+        )
+        test_y = sf.to(company, d["test_y"].astype(np.float32))
+
+        model = SSXGBoost(devices, n_estimators=3, lambda_=1, gamma=0.5, max_depth=max_depth)
+        model.fit(train_X, train_y, buckets, FedQuantiles, X_test=test_X, y_test=test_y)
+
+        y_pred = sf.reveal(model.predict(test_X, company))
+        logits = sf.reveal(model._forward(test_X).to(company))
+        y_prob = 1.0 / (1.0 + np.exp(-np.asarray(logits).reshape(-1)))
+
+        metrics = _compute_classification_metrics(d["test_y"], y_pred)
+        metrics["AUC"] = _compute_binary_auc(d["test_y"], y_prob)
+        metrics["方法"] = f"SSXGBoost-depth{max_depth}"
+        metrics["数据集"] = "Adult"
+
+        csv_path = os.path.join(eval_results_dir, f"ssxgboost_adult_depth{max_depth}_metrics.csv")
+        pd.DataFrame([metrics]).to_csv(csv_path, index=False)
+
+        assert metrics["准确率"] > 0.5, f"Adult SSXGBoost depth={max_depth} accuracy too low: {metrics['准确率']}"
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,12 @@ COORD_RES=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(
 echo "======================================"
 echo " AnonymVFL Ray Head 启动脚本"
 echo "======================================"
+
+# 默认放宽 Ray OOM 保护，避免全量 MNIST 场景下 worker 被 0.95 阈值提前杀掉。
+# 允许用户通过环境变量覆盖。
+export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
+export RAY_memory_monitor_refresh_ms="${RAY_memory_monitor_refresh_ms:-0}"
+
 echo " Node IP:          ${A_IP}"
 echo " Ray Port:         ${RAY_PORT}"
 echo " Object Mgr Port:  ${OBJ_MGR_PORT}"
@@ -38,6 +44,8 @@ echo " Worker Ports:     ${MIN_WORKER_PORT}-${MAX_WORKER_PORT}"
 echo " CPUs:             ${NUM_CPUS}"
 echo " Object Store:     ${OBJ_STORE}"
 echo " Resources:        company=${COMPANY_RES}, coordinator=${COORD_RES}"
+echo " Mem Threshold:    ${RAY_memory_usage_threshold}"
+echo " Mem Monitor(ms):  ${RAY_memory_monitor_refresh_ms}"
 echo "======================================"
 
 # 停止可能残留的 Ray 进程

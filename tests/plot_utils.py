@@ -29,67 +29,124 @@ def save_performance_table(records: list[dict], csv_path: str):
 
 
 def plot_time_vs_samples(records: list[dict], title: str, png_path: str,
-                         x_key: str = "样本数量", y_key: str = "总时间(s)"):
-    """Line chart: time vs sample size."""
+                         x_key: str = "样本数量", y_key: str = "总时间(s)",
+                         comm_key: str = "总通信量(MB)"):
+    """Line chart: time vs sample size, with optional communication volume on secondary y-axis."""
     df = pd.DataFrame(records)
-    fig, ax = plt.subplots()
-    ax.plot(df[x_key], df[y_key], marker="o", linewidth=2)
-    ax.set_xlabel(x_key)
-    ax.set_ylabel(y_key)
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
+    color_time = "#4C72B0"
+    color_comm = "#DD8452"
+
+    fig, ax1 = plt.subplots()
+    ax1.plot(df[x_key], df[y_key], marker="o", color=color_time, linewidth=2, label=y_key)
+    ax1.set_xlabel(x_key)
+    ax1.set_ylabel(y_key, color=color_time)
+    ax1.tick_params(axis="y", labelcolor=color_time)
+    ax1.set_title(title)
+    ax1.grid(True, alpha=0.3)
+
+    if comm_key in df.columns:
+        ax2 = ax1.twinx()
+        ax2.plot(df[x_key], df[comm_key], marker="s", color=color_comm,
+                 linewidth=2, linestyle="--", label=comm_key)
+        ax2.set_ylabel(comm_key, color=color_comm)
+        ax2.tick_params(axis="y", labelcolor=color_comm)
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+
     fig.tight_layout()
     os.makedirs(os.path.dirname(png_path), exist_ok=True)
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_batch_size_impact(records: list[dict], png_path: str):
-    """Line chart: batch size vs training time, one line per sample count."""
+def plot_batch_size_impact(records: list[dict], png_path: str,
+                            comm_key: str = "总通信量(MB)"):
+    """Line chart: batch size vs training time, one line per sample count.
+    If comm_key column is present, communication volume is plotted on a secondary y-axis."""
     df = pd.DataFrame(records)
-    fig, ax = plt.subplots()
     colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3"]
+    comm_colors = ["#DD8452", "#E39566", "#EAA67A", "#F0B78E", "#F6C8A2"]
+    has_comm = comm_key in df.columns
+
+    fig, ax1 = plt.subplots()
+    ax2 = ax1.twinx() if has_comm else None
+
     groups = df.groupby("样本数量")
     for idx, (n_samples, grp) in enumerate(sorted(groups)):
         grp = grp.sort_values("批次大小")
         color = colors[idx % len(colors)]
-        ax.plot(grp["批次大小"], grp["总训练时间(s)"],
-                marker="o", color=color, linewidth=2,
-                label=f"样本数={int(n_samples)}")
+        ax1.plot(grp["批次大小"], grp["总训练时间(s)"],
+                 marker="o", color=color, linewidth=2,
+                 label=f"训练时间 样本数={int(n_samples)}")
         for x, y in zip(grp["批次大小"], grp["总训练时间(s)"]):
-            ax.annotate(f"{y:.1f}", (x, y), textcoords="offset points",
-                        xytext=(0, 8), ha="center", fontsize=9)
-    ax.set_xlabel("批次大小")
-    ax.set_ylabel("总训练时间 (s)")
-    ax.set_title("批次大小对SSLR训练性能的影响")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+            ax1.annotate(f"{y:.1f}", (x, y), textcoords="offset points",
+                         xytext=(0, 8), ha="center", fontsize=9)
+        if has_comm:
+            ax2.plot(grp["批次大小"], grp[comm_key],
+                     marker="s", color=comm_colors[idx % len(comm_colors)],
+                     linewidth=2, linestyle="--",
+                     label=f"{comm_key} 样本数={int(n_samples)}")
+
+    ax1.set_xlabel("批次大小")
+    ax1.set_ylabel("总训练时间 (s)", color=colors[0])
+    ax1.tick_params(axis="y", labelcolor=colors[0])
+    ax1.set_title("批次大小对SSLR训练性能的影响")
+    ax1.grid(True, alpha=0.3)
+
+    if has_comm:
+        ax2.set_ylabel(comm_key, color="#DD8452")
+        ax2.tick_params(axis="y", labelcolor="#DD8452")
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8)
+    else:
+        ax1.legend()
+
     fig.tight_layout()
     os.makedirs(os.path.dirname(png_path), exist_ok=True)
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_inference_latency(records: list[dict], png_path: str):
-    """Line chart: inference latency vs sample count."""
+def plot_inference_latency(records: list[dict], png_path: str,
+                            comm_key: str = "总通信量(MB)"):
+    """Two-subplot chart: (1) total latency + communication volume, (2) per-sample latency."""
     df = pd.DataFrame(records)
-    fig, ax1 = plt.subplots()
-    color1, color2 = "#4C72B0", "#DD8452"
+    color1, color2, color3 = "#4C72B0", "#55A868", "#DD8452"
+    has_comm = comm_key in df.columns
 
-    ax1.set_xlabel("样本数量")
-    ax1.set_ylabel("推理延迟 (s)", color=color1)
-    ax1.plot(df["样本数量"], df["推理延迟(s)"], marker="o", color=color1,
-             linewidth=2, label="总延迟")
-    ax1.tick_params(axis="y", labelcolor=color1)
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
 
-    ax2 = ax1.twinx()
-    ax2.set_ylabel("单样本平均延迟 (ms)", color=color2)
-    ax2.plot(df["样本数量"], df["单样本平均延迟(ms)"], marker="s", color=color2,
-             linewidth=2, linestyle="--", label="单样本延迟")
-    ax2.tick_params(axis="y", labelcolor=color2)
+    # --- Top subplot: 总延迟 + 总通信量 ---
+    ax_top.set_ylabel("推理延迟 (s)", color=color1)
+    l1, = ax_top.plot(df["样本数量"], df["推理延迟(s)"], marker="o", color=color1,
+                      linewidth=2, label="总延迟")
+    ax_top.tick_params(axis="y", labelcolor=color1)
+    ax_top.set_title("推理延迟与通信量")
+    ax_top.grid(True, alpha=0.3)
 
-    ax1.set_title("推理延迟测试结果")
-    ax1.grid(True, alpha=0.3)
+    top_lines, top_labels = [l1], ["总延迟"]
+    if has_comm:
+        ax_top2 = ax_top.twinx()
+        ax_top2.set_ylabel(comm_key, color=color3)
+        l3, = ax_top2.plot(df["样本数量"], df[comm_key], marker="^", color=color3,
+                           linewidth=2, linestyle="--", label=comm_key)
+        ax_top2.tick_params(axis="y", labelcolor=color3)
+        top_lines.append(l3)
+        top_labels.append(comm_key)
+    ax_top.legend(top_lines, top_labels, loc="upper left", fontsize=9)
+
+    # --- Bottom subplot: 单样本延迟 ---
+    ax_bot.set_xlabel("样本数量")
+    ax_bot.set_ylabel("单样本平均延迟 (ms)", color=color2)
+    ax_bot.plot(df["样本数量"], df["单样本平均延迟(ms)"], marker="s", color=color2,
+                linewidth=2, label="单样本延迟")
+    ax_bot.tick_params(axis="y", labelcolor=color2)
+    ax_bot.set_title("单样本平均推理延迟")
+    ax_bot.grid(True, alpha=0.3)
+    ax_bot.legend(loc="upper right", fontsize=9)
+
     fig.tight_layout()
     os.makedirs(os.path.dirname(png_path), exist_ok=True)
     fig.savefig(png_path, dpi=150, bbox_inches="tight")

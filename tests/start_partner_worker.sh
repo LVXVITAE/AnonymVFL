@@ -39,10 +39,18 @@ RAY_HEAD_ADDR="${RAY_HEAD_IP}:${RAY_HEAD_PORT}"
 echo "======================================"
 echo " AnonymVFL Partner Worker 启动脚本"
 echo "======================================"
+
+# 默认放宽 Ray OOM 保护，避免分布式任务中 worker 被内存阈值提前杀掉。
+# 允许用户通过环境变量覆盖。
+export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
+export RAY_memory_monitor_refresh_ms="${RAY_memory_monitor_refresh_ms:-0}"
+
 echo " Ray Head 地址: ${RAY_HEAD_ADDR}"
 echo " Partner 本机 IP: ${PARTNER_IP}"
 echo " Partner SPU 端口: ${PARTNER_SPU_PORT}"
 echo " CPU 数量: ${NUM_CPUS}"
+echo " Mem Threshold: ${RAY_memory_usage_threshold}"
+echo " Mem Monitor(ms): ${RAY_memory_monitor_refresh_ms}"
 echo "======================================"
 
 # 1. 停止可能残留的 Ray 进程

@@ -216,6 +216,8 @@ class MPCInitializer:
 
     def __init__(self, mode='single_sim', ray_head_addr="", cluster_def={}, runtime_env=None):
         self.mode = mode
+        self._company_heu = None
+        self._partner_heu = None
         init_kwargs = {}
         if runtime_env is not None:
             init_kwargs['runtime_env'] = runtime_env
@@ -242,21 +244,31 @@ class MPCInitializer:
         self.spu = sf.SPU(self.config, **spu_kwargs)
         self.company, self.partner, self.coordinator = sf.PYU(
             'company'), sf.PYU('partner'), sf.PYU('coordinator')
+
+    def _build_heu(self, sk_keeper: str, evaluators: list[str]):
         encoding = {
             'cleartext_type': 'DT_F32',
             'encoder': 'FloatEncoder'
         }
         heu_config = sf.utils.testing.heu_config(
-            sk_keeper='company', evaluators=['partner'])
+            sk_keeper=sk_keeper, evaluators=evaluators)
         heu_config['encoding'] = encoding
-        self.company_heu = sf.HEU(
+        return sf.HEU(
             heu_config, self.spu.cluster_def['runtime_config']['field'])
 
-        heu_config = sf.utils.testing.heu_config(
-            sk_keeper='partner', evaluators=['company'])
-        heu_config['encoding'] = encoding
-        self.partner_heu = sf.HEU(
-            heu_config, self.spu.cluster_def['runtime_config']['field'])
+    @property
+    def company_heu(self):
+        if self._company_heu is None:
+            self._company_heu = self._build_heu(
+                sk_keeper='company', evaluators=['partner'])
+        return self._company_heu
+
+    @property
+    def partner_heu(self):
+        if self._partner_heu is None:
+            self._partner_heu = self._build_heu(
+                sk_keeper='partner', evaluators=['company'])
+        return self._partner_heu
 
 
 class SSML:
