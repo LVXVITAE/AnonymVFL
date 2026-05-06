@@ -2,7 +2,7 @@
 
 ## 1. 项目概述
 
-本项目为基于 SecretFlow / Ray 的纵向联邦学习（Company / Partner 双节点 + Coordinator）。接口分为两层：
+本项目为基于 SecretFlow / Ray 的纵向联邦学习（Company / Partner / Coordinator 三方节点）。接口分为两层：
 
 | 层次 | 说明 | 主要源码 |
 |------|------|----------|

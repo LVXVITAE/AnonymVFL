@@ -68,7 +68,7 @@ spec:
             ray start --head \
               --port={{ .Values.company.service.ports.ray }} \
               --num-cpus={{ .Values.company.resources.requests.cpu | default 8 }} \
-              --resources='{"company": 10, "coordinator": 10}' \
+              --resources='{"company": 10}' \
               --object-store-memory=2000000000 \
               --include-dashboard=false \
               --node-ip-address=$HOST_IP &
@@ -108,6 +108,9 @@ spec:
             echo "✅ Company 节点已就绪，等待 Web UI 启动训练任务..."
             echo "📍 Ray Head 地址: $HOST_IP:{{ .Values.company.service.ports.ray }}"
             echo "📍 Partner SPU 地址: $PARTNER_SPU_ADDR"
+            if [ -n "$COORDINATOR_SPU_ADDR" ]; then
+              echo "📍 Coordinator SPU 地址: $COORDINATOR_SPU_ADDR"
+            fi
             echo ""
             echo "💡 提示：训练任务将由 Web UI 通过 Kubernetes API 动态注入"
             echo "💡 提示：Web UI 会修改此 Deployment 的 args，添加训练命令并重启 Pod"
@@ -118,9 +121,6 @@ spec:
         ports:
         - name: spu
           containerPort: {{ .Values.company.service.ports.spu }}
-          protocol: TCP
-        - name: coordinator
-          containerPort: 9396
           protocol: TCP
         - name: ray
           containerPort: {{ .Values.company.service.ports.ray }}

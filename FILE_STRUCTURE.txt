@@ -1,81 +1,92 @@
-移动多方安全计算项目 - Helm Chart 文件结构
-═══════════════════════════════════════════════════
+AnonymVFL 三机部署相关文件概览
+=================================
 
-mobile_project3_new/
-│
-├── 📋 核心配置文件
-│   ├── Dockerfile                    ✅ Docker 镜像构建文件
-│   ├── requirements.txt              ✅ Python 依赖清单
-│   └── .dockerignore                ✅ Docker 构建忽略文件
-│
-├── 📚 文档文件
-│   ├── DEPLOYMENT.md                 ✅ 详细部署指南（11KB）
-│   ├── QUICKSTART.md                 ✅ 快速入门指南（4.3KB）
-│   ├── SUMMARY.md                    ✅ 完成总结
-│   ├── FILE_STRUCTURE.txt            ✅ 本文件
-│   ├── 操作手册.md                   📖 原始操作手册
-│   └── 操作手册.pdf                  📖 原始操作手册（PDF）
-│
-├── 🔧 工具脚本
-│   └── validate-chart.sh             ✅ Chart 验证脚本（5.0KB）
-│
-├── 📦 Helm Chart 包
-│   └── helm-chart/
-│       └── mobile-mpc-project/
-│           │
-│           ├── Chart.yaml            ✅ Chart 元数据
-│           ├── values.yaml           ✅ 默认配置（207行）
-│           ├── README.md             ✅ Chart 使用文档
-│           ├── .helmignore          ✅ Helm 打包忽略
-│           │
-│           └── templates/            📂 Kubernetes 资源模板
-│               ├── _helpers.tpl              ✅ 辅助函数（145行）
-│               ├── company-deployment.yaml   ✅ Company部署（116行）
-│               ├── partner-deployment.yaml   ✅ Partner部署（111行）
-│               ├── service.yaml              ✅ 服务配置（72行）
-│               ├── serviceaccount.yaml       ✅ 服务账户（10行）
-│               ├── ingress.yaml              ✅ 入口路由（36行）
-│               ├── pvc.yaml                  ✅ 持久化存储（53行）
-│               └── NOTES.txt                 ✅ 部署提示（74行）
-│
-└── 💻 应用代码（原有文件）
-    ├── company/                      🏢 甲方节点代码
-    ├── partner/                      🤝 乙方节点代码
-    ├── web_ui/                       🌐 Web UI界面
-    ├── trans/                        📡 传输模块
-    ├── test/                         🧪 测试文件
-    └── data_full.csv                 📊 数据文件
+一、镜像与构建
+---------------------------------
+- Dockerfile
+  通用镜像定义
+- Dockerfile.company
+  Company 专用镜像
+- Dockerfile.partner
+  Partner 专用镜像
+- Dockerfile.coordinator
+  Coordinator 专用镜像
+- build-multi-cluster-images.sh
+  构建 Company、Partner、Coordinator 三类镜像
 
-═══════════════════════════════════════════════════
-统计信息
-═══════════════════════════════════════════════════
+二、部署脚本
+---------------------------------
+- deploy-multi-cluster.sh
+  三集群部署入口脚本
+- deploy-steps.sh
+  旧部署辅助脚本
+- rebuild_and_deploy.sh
+  旧重建部署脚本
 
-✅ 新创建文件：       17 个
-📝 Kubernetes 配置：  711 行
-📖 文档：            3 个（~15KB）
-🔧 脚本工具：        1 个
+三、Helm Chart
+---------------------------------
+helm-chart/mobile-mpc-project/
+- values.yaml
+  默认配置
+- values-cluster-a.yaml
+  Company 集群配置
+- values-cluster-b.yaml
+  Partner 集群配置
+- values-cluster-c.yaml
+  Coordinator 集群配置
+- templates/company-deployment.yaml
+  Company Deployment
+- templates/partner-deployment.yaml
+  Partner Deployment
+- templates/coordinator-deployment.yaml
+  Coordinator Deployment
+- templates/service.yaml
+  Service 定义
+- templates/webui-deployment.yaml
+  WebUI Deployment
+- templates/webui-rbac.yaml
+  WebUI RBAC
+- README.md
+  Chart 使用说明
 
-═══════════════════════════════════════════════════
-支持的 Kubernetes 资源
-═══════════════════════════════════════════════════
+四、WebUI 与网络验证
+---------------------------------
+- web_ui/app.py
+  WebUI 后端，负责训练/推理调度
+- web_ui/config.yaml
+  三机地址示例配置
+- web_ui/test_network.py
+  三机连通性测试脚本
+- web_ui/network_utils.py
+  网络工具模块
 
-✓ Deployment          (Company + Partner 节点)
-✓ Service             (网络服务)
-✓ ServiceAccount      (服务账户)
-✓ PersistentVolumeClaim (持久化卷，可选)
-✓ Ingress             (入口路由，可选)
+五、项目文档
+---------------------------------
+- DEPLOYMENT.md
+  三机部署详解
+- QUICKSTART.md
+  三机快速开始
+- TEST_FLOW.md
+  三机联调测试流程
+- LOCAL_INFER_REPRO.md
+  本地推理复现与排查
+- FILE_STRUCTURE.txt
+  本文件
 
-═══════════════════════════════════════════════════
-Chart 功能特性
-═══════════════════════════════════════════════════
+六、核心业务目录
+---------------------------------
+- company/
+  Company 侧训练、推理、启动脚本与模型目录
+- coordinator/
+  Coordinator 侧独立启动脚本目录
+- partner/
+  Partner 侧脚本与模型目录
+- tests/
+  测试目录
 
-✓ 多节点部署（Company、Partner、Coordinator）
-✓ 灵活的资源配置
-✓ 镜像仓库支持
-✓ 持久化存储支持
-✓ Ingress 路由支持
-✓ 多种服务类型
-✓ 亲和性和容忍度配置
-✓ 自定义标签和注解
-
-═══════════════════════════════════════════════════
+七、当前三机改造关键点
+---------------------------------
+- Coordinator 已从 Company 中拆出，拥有独立镜像、独立 Deployment、独立 Service
+- Company WebUI 训练和推理流程改为使用独立的 COORDINATOR_SPU_ADDR
+- 三集群脚本现在支持 Cluster A / Cluster B / Cluster C
+- 文档已统一切换到 Company / Partner / Coordinator 三机部署口径

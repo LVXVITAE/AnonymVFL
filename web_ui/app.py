@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+from textwrap import dedent
 
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -813,64 +814,72 @@ def config_api():
 
 def _get_default_company_startup_script(ray_port, partner_service_name):
     """获取默认的 Company 节点启动脚本（不包含训练命令）"""
-    return f"""echo "🚀 启动 Company 节点..."
-            
-            # 清理旧的 Ray 资源（如果存在）
-            echo "🧹 清理旧的 Ray 资源..."
-            ray stop --force || true
-            sleep 2
-            
-            # 使用 K8s Downward API 注入的 POD_IP（避免 hostname -i 多网卡问题）
-            export POD_IP=${{POD_IP:-$(hostname -i | tr ' ' '\\n' | head -1)}}
-            echo "📍 Pod IP: $POD_IP"
-            
-            # 使用 Ray CLI 启动 Ray Head（指定端口 {ray_port}）
-            echo "📍 启动 Ray Head (端口: {ray_port})..."
-            ray start --head \\
-              --port={ray_port} \\
-              --num-cpus=8 \\
-              --resources='{{"company": 10, "coordinator": 10}}' \\
-              --object-store-memory=2000000000 \\
-              --include-dashboard=false \\
-              --node-ip-address=$POD_IP &
-            
-            RAY_PID=$!
-            echo "Ray Head 后台进程 PID: $RAY_PID"
-            
-            # 等待 Ray Head 启动
-            echo "⏳ 等待 Ray Head 准备就绪..."
-            sleep 5
-            
-            # 验证 Ray Head 是否启动成功
-            if ! ray status &>/dev/null; then
-              echo "⚠️  Ray Head 启动检查失败，继续执行..."
-            else
-              echo "✅ Ray Head 已启动"
-            fi
-            
-            # 解析 Partner Service 的 Pod IP
-            echo "🔍 解析 Partner Service 地址..."
-            PARTNER_SERVICE_NAME="{partner_service_name}"
-            PARTNER_IP=$(getent hosts $PARTNER_SERVICE_NAME | awk '{{ print $1 }}' | head -1)
-            if [ -z "$PARTNER_IP" ]; then
-              echo "⚠️  无法解析 Partner Service，使用 Service 名称"
-              PARTNER_SPU_ADDR="{partner_service_name}:9395"
-            else
-              echo "✅ Partner IP: $PARTNER_IP"
-              PARTNER_SPU_ADDR="$PARTNER_IP:9395"
-            fi
-            
-            # 🔥 修改：不自动执行训练，等待 Web UI 通过修改 Deployment args 来启动训练
-            echo "✅ Company 节点已就绪，等待 Web UI 启动训练任务..."
-            echo "📍 Ray Head 地址: $POD_IP:{ray_port}"
-            echo "📍 Partner SPU 地址: $PARTNER_SPU_ADDR"
-            echo ""
-            echo "💡 提示：训练任务将由 Web UI 通过 Kubernetes API 动态注入"
-            echo "💡 提示：Web UI 会修改此 Deployment 的 args，添加训练命令并重启 Pod"
-            
-            # 保持 Pod 运行（等待训练命令）
-            # Web UI 会通过修改 Deployment args 来添加训练命令
-            tail -f /dev/null"""
+    return dedent(f"""
+                echo "🚀 启动 Company 节点..."
+
+                # 清理旧的 Ray 资源（如果存在）
+                echo "🧹 清理旧的 Ray 资源..."
+                ray stop --force || true
+                sleep 2
+
+                # 使用 K8s Downward API 注入的 POD_IP（避免 hostname -i 多网卡问题）
+                export POD_IP=${{POD_IP:-$(hostname -i | tr ' ' '\n' | head -1)}}
+                echo "📍 Pod IP: $POD_IP"
+
+                # 使用 Ray CLI 启动 Ray Head（指定端口 {ray_port}）
+                echo "📍 启动 Ray Head (端口: {ray_port})..."
+                ray start --head \
+                    --port={ray_port} \
+                    --num-cpus=8 \
+                    --resources='{{"company": 10}}' \
+                    --object-store-memory=2000000000 \
+                    --include-dashboard=false \
+                    --node-ip-address=$POD_IP &
+
+                RAY_PID=$!
+                echo "Ray Head 后台进程 PID: $RAY_PID"
+
+                # Coordinator 地址优先使用环境变量
+                if [ -z "$COORDINATOR_SPU_ADDR" ]; then
+                    echo "⚠️  未设置 COORDINATOR_SPU_ADDR，回退到本地端口"
+                    COORDINATOR_SPU_ADDR="$POD_IP:9396"
+                fi
+
+                # 等待 Ray Head 启动
+                echo "⏳ 等待 Ray Head 准备就绪..."
+                sleep 5
+
+                # 验证 Ray Head 是否启动成功
+                if ! ray status &>/dev/null; then
+                    echo "⚠️  Ray Head 启动检查失败，继续执行..."
+                else
+                    echo "✅ Ray Head 已启动"
+                fi
+
+                # 解析 Partner Service 的 Pod IP
+                echo "🔍 解析 Partner Service 地址..."
+                PARTNER_SERVICE_NAME="{partner_service_name}"
+                PARTNER_IP=$(getent hosts $PARTNER_SERVICE_NAME | awk '{{ print $1 }}' | head -1)
+                if [ -z "$PARTNER_IP" ]; then
+                    echo "⚠️  无法解析 Partner Service，使用 Service 名称"
+                    PARTNER_SPU_ADDR="{partner_service_name}:9395"
+                else
+                    echo "✅ Partner IP: $PARTNER_IP"
+                    PARTNER_SPU_ADDR="$PARTNER_IP:9395"
+                fi
+
+                # 默认不自动执行训练，等待 Web UI 动态注入训练命令
+                echo "✅ Company 节点已就绪，等待 Web UI 启动训练任务..."
+                echo "📍 Ray Head 地址: $POD_IP:{ray_port}"
+                echo "📍 Partner SPU 地址: $PARTNER_SPU_ADDR"
+                echo "📍 Coordinator SPU 地址: $COORDINATOR_SPU_ADDR"
+                echo ""
+                echo "💡 提示：训练任务将由 Web UI 通过 Kubernetes API 动态注入"
+                echo "💡 提示：Web UI 会修改此 Deployment 的 args，添加训练命令并重启 Pod"
+
+                # 保持 Pod 运行（等待训练命令）
+                tail -f /dev/null
+        """)
 
 
 def _resolve_partner_datasets(prefer_infer: bool = False):
@@ -928,7 +937,7 @@ def _resolve_partner_datasets(prefer_infer: bool = False):
 def _generate_training_command(model, n_epochs, batch_size, lr, val_steps,
                                n_estimators, max_depth, k_quantiles, reg_coef,
                                pod_ip_placeholder, partner_spu_addr_placeholder,
-                               coordinator_port, ray_port, spu_port,
+                               ray_port, spu_port,
                                run_id,
                                company_model_save_dir, partner_model_save_dir,
                                company_train_dataset=None, company_val_dataset=None,
@@ -951,7 +960,7 @@ def _generate_training_command(model, n_epochs, batch_size, lr, val_steps,
               --mode multi_distributed \\
               --company_spu_addr $POD_IP:{spu_port} \\
               --partner_spu_addr $PARTNER_SPU_ADDR \\
-              --coordinator_spu_addr $POD_IP:{coordinator_port} \\
+              --coordinator_spu_addr $COORDINATOR_SPU_ADDR \\
               --ray_head_addr $POD_IP:{ray_port} \\
               --run_psi True \\
               --path_to_company_train_dataset {_company_train} \\
@@ -1340,7 +1349,6 @@ def start_training():
         # 从当前配置中提取端口信息（如果存在）
         # 默认值（从 values.yaml 中获取）
         spu_port = 9394
-        coordinator_port = 9396
         ray_port = 6379
 
         # 尝试从当前 args 中提取端口（如果存在）
@@ -1348,11 +1356,6 @@ def start_training():
             r'--company_spu_addr \$POD_IP:(\d+)', current_args)
         if spu_match:
             spu_port = int(spu_match.group(1))
-
-        coord_match = re.search(
-            r'--coordinator_spu_addr \$POD_IP:(\d+)', current_args)
-        if coord_match:
-            coordinator_port = int(coord_match.group(1))
 
         ray_match = re.search(r'--ray_head_addr \$POD_IP:(\d+)', current_args)
         if ray_match:
@@ -1390,7 +1393,6 @@ def start_training():
             reg_coef=reg_coef,
             pod_ip_placeholder="$POD_IP",
             partner_spu_addr_placeholder="$PARTNER_SPU_ADDR",
-            coordinator_port=coordinator_port,
             ray_port=ray_port,
             spu_port=spu_port,
             run_id=run_id,
@@ -1429,58 +1431,67 @@ def start_training():
                 'app.kubernetes.io/instance', 'mpc-test')
             partner_service_name = f"{release_name}-mobile-mpc-project-partner-svc"
 
-            script_template = """echo "🚀 启动 Company 节点..."
-            
-            # 清理旧的 Ray 资源（如果存在）
-            echo "🧹 清理旧的 Ray 资源..."
-            ray stop --force || true
-            sleep 2
-            
-            # 使用 K8s Downward API 注入的 POD_IP（避免 hostname -i 多网卡问题）
-            export POD_IP=${POD_IP:-$(hostname -i | tr ' ' '\n' | head -1)}
-            echo "📍 Pod IP: $POD_IP"
-            
-            # 使用 Ray CLI 启动 Ray Head（指定端口 {ray_port}）
-            echo "📍 启动 Ray Head (端口: {ray_port})..."
-            ray start --head \\
-              --port={ray_port} \\
-              --num-cpus=8 \\
-              --resources='{{"company": 10, "coordinator": 10}}' \\
-              --object-store-memory=2000000000 \\
-              --include-dashboard=false \\
-              --node-ip-address=$POD_IP &
-            
-            RAY_PID=$!
-            echo "Ray Head 后台进程 PID: $RAY_PID"
-            
-            # 等待 Ray Head 启动
-            echo "⏳ 等待 Ray Head 准备就绪..."
-            sleep 5
-            
-            # 验证 Ray Head 是否启动成功
-            if ! ray status &>/dev/null; then
-              echo "⚠️  Ray Head 启动检查失败，继续执行..."
-            else
-              echo "✅ Ray Head 已启动"
-            fi
-            
-            # 解析 Partner Service 的 Pod IP
-            echo "🔍 解析 Partner Service 地址..."
-            PARTNER_SERVICE_NAME="{partner_service_name}"
-            PARTNER_IP=$(getent hosts $PARTNER_SERVICE_NAME | awk '{{ print $1 }}' | head -1)
-            if [ -z "$PARTNER_IP" ]; then
-              echo "⚠️  无法解析 Partner Service，使用 Service 名称"
-              PARTNER_SPU_ADDR="{partner_service_name}:9395"
-            else
-              echo "✅ Partner IP: $PARTNER_IP"
-              PARTNER_SPU_ADDR="$PARTNER_IP:9395"
-            fi
-            
-            # 运行 Company 程序
-            echo "🎯 启动 Company MPC 节点..."
-            echo "📍 Ray Head 地址: $POD_IP:{ray_port}"
-            
-            {training_cmd}"""
+            script_template = dedent("""
+                                echo "🚀 启动 Company 节点..."
+
+                                # 清理旧的 Ray 资源（如果存在）
+                                echo "🧹 清理旧的 Ray 资源..."
+                                ray stop --force || true
+                                sleep 2
+
+                                # 使用 K8s Downward API 注入的 POD_IP（避免 hostname -i 多网卡问题）
+                                export POD_IP=${POD_IP:-$(hostname -i | tr ' ' '\n' | head -1)}
+                                echo "📍 Pod IP: $POD_IP"
+
+                                # 使用 Ray CLI 启动 Ray Head（指定端口 {ray_port}）
+                                echo "📍 启动 Ray Head (端口: {ray_port})..."
+                                ray start --head \
+                                    --port={ray_port} \
+                                    --num-cpus=8 \
+                                    --resources='{{"company": 10}}' \
+                                    --object-store-memory=2000000000 \
+                                    --include-dashboard=false \
+                                    --node-ip-address=$POD_IP &
+
+                                RAY_PID=$!
+                                echo "Ray Head 后台进程 PID: $RAY_PID"
+
+                                # 等待 Ray Head 启动
+                                echo "⏳ 等待 Ray Head 准备就绪..."
+                                sleep 5
+
+                                # 验证 Ray Head 是否启动成功
+                                if ! ray status &>/dev/null; then
+                                    echo "⚠️  Ray Head 启动检查失败，继续执行..."
+                                else
+                                    echo "✅ Ray Head 已启动"
+                                fi
+
+                                # 解析 Partner Service 的 Pod IP
+                                echo "🔍 解析 Partner Service 地址..."
+                                PARTNER_SERVICE_NAME="{partner_service_name}"
+                                PARTNER_IP=$(getent hosts $PARTNER_SERVICE_NAME | awk '{{ print $1 }}' | head -1)
+                                if [ -z "$PARTNER_IP" ]; then
+                                    echo "⚠️  无法解析 Partner Service，使用 Service 名称"
+                                    PARTNER_SPU_ADDR="{partner_service_name}:9395"
+                                else
+                                    echo "✅ Partner IP: $PARTNER_IP"
+                                    PARTNER_SPU_ADDR="$PARTNER_IP:9395"
+                                fi
+
+                                # Coordinator 地址优先使用环境变量
+                                if [ -z "$COORDINATOR_SPU_ADDR" ]; then
+                                    echo "⚠️  未设置 COORDINATOR_SPU_ADDR，回退到本地端口"
+                                    COORDINATOR_SPU_ADDR="$POD_IP:9396"
+                                fi
+
+                                # 运行 Company 程序
+                                echo "🎯 启动 Company MPC 节点..."
+                                echo "📍 Ray Head 地址: $POD_IP:{ray_port}"
+                                echo "📍 Coordinator SPU 地址: $COORDINATOR_SPU_ADDR"
+
+                                {training_cmd}
+                        """)
 
             new_args = script_template.format(
                 ray_port=ray_port,
@@ -1949,11 +1960,9 @@ def _run_infer_task(model_type: str, company_model_path: str, partner_model_path
 
         # SPU/Ray 端口与 Helm values 保持一致（固定值）
         spu_port = 9394
-        coordinator_port = 9396
         ray_port_num = 6379
 
         company_spu_addr = f'{pod_ip}:{spu_port}'
-        coordinator_spu_addr = f'{pod_ip}:{coordinator_port}'
         ray_head_addr = f'{pod_ip}:{ray_port_num}'
 
         # Partner 地址：优先使用环境变量，否则从 config.yaml 拼接
@@ -1963,6 +1972,15 @@ def _run_infer_task(model_type: str, company_model_path: str, partner_model_path
             partner_cfg = cfg.get('partner', {})
             partner_ip = partner_cfg.get('ip', '127.0.0.1')
             partner_spu_addr = f"{partner_ip}:9395"
+
+        # Coordinator 地址优先使用环境变量，否则回退到 config.yaml
+        coordinator_spu_addr = os.environ.get('COORDINATOR_SPU_ADDR', '')
+        if not coordinator_spu_addr:
+            cfg = state.config
+            coordinator_cfg = cfg.get('coordinator', {})
+            coordinator_ip = coordinator_cfg.get('ip', '127.0.0.1')
+            coordinator_port = coordinator_cfg.get('port_spu', 9396)
+            coordinator_spu_addr = f"{coordinator_ip}:{coordinator_port}"
 
         infer_script = str(project_root / 'company' / 'infer_run.py')
         cmd = [

@@ -1,192 +1,143 @@
-# 快速入门指南
+# 快速开始
 
-本指南帮助你在 5 分钟内将项目部署到 Kubernetes。
+本指南用于快速启动当前推荐部署方式：Company、Partner、Coordinator 三机部署。
+
+如果你只想尽快落地，请按下面 5 步执行。
 
 ## 前置条件
 
-- ✅ Docker 已安装
-- ✅ Kubernetes 集群可访问（kubectl 已配置）
-- ✅ Helm 3.x 已安装
-- ✅ 镜像仓库访问权限
+- Docker 已安装
+- kubectl 已配置
+- Helm 3.x 已安装
+- 三台机器或三个 Kubernetes 集群网络互通
+- 已知三台机器 IP：
+  - Company 机器
+  - Partner 机器
+  - Coordinator 机器
 
-## 三步部署
+## 第 1 步：构建三类镜像
 
-### 第一步：构建并推送镜像
-
-```bash
-# 进入项目目录
-cd /home/dxn/mobile_project_final/mobile_project3_new
-
-# 修改为你的镜像仓库地址
-export REGISTRY="registry.example.com/mpc"
-export IMAGE_TAG="v1.0.0"
-
-# 构建镜像
-docker build -t ${REGISTRY}/mobile-mpc-project:${IMAGE_TAG} .
-
-# 推送镜像
-docker push ${REGISTRY}/mobile-mpc-project:${IMAGE_TAG}
-```
-
-### 第二步：配置 Chart
-
-创建自定义配置文件 `my-values.yaml`：
-
-```yaml
-global:
-  imageRegistry: "registry.example.com/mpc/"  # 修改为你的仓库
-
-company:
-  image:
-    tag: "v1.0.0"
-
-partner:
-  image:
-    tag: "v1.0.0"
-
-webui:
-  service:
-    type: NodePort  # 或 LoadBalancer
-```
-
-### 第三步：部署到 Kubernetes
+在项目根目录执行：
 
 ```bash
-# 创建命名空间
-kubectl create namespace mpc-project
-
-# 如果使用私有仓库，创建镜像拉取密钥
-kubectl create secret docker-registry regcred \
-  --docker-server=registry.example.com \
-  --docker-username=YOUR_USERNAME \
-  --docker-password=YOUR_PASSWORD \
-  -n mpc-project
-
-# 安装 Chart
-helm install my-mpc helm-chart/mobile-mpc-project \
-  -n mpc-project \
-  -f my-values.yaml
-
-# 查看状态
-kubectl get pods -n mpc-project -w
+./build-multi-cluster-images.sh v1.0.19
 ```
 
-## 验证部署
+产物：
+
+- `mobile-mpc-company:v1.0.19`
+- `mobile-mpc-partner:v1.0.19`
+- `mobile-mpc-coordinator:v1.0.19`
+
+以及三份 tar 文件。
+
+## 第 2 步：准备三集群变量
 
 ```bash
-# 查看所有资源
-kubectl get all -n mpc-project
+export CLUSTER_A_CONTEXT=cluster-a
+export CLUSTER_B_CONTEXT=cluster-b
+export CLUSTER_C_CONTEXT=cluster-c
 
-# 查看 Pod 日志
-kubectl logs -n mpc-project -l app.kubernetes.io/component=company -f
-
-# 访问 Web UI（如果使用 NodePort）
-kubectl get svc -n mpc-project
-# 访问 http://<NODE_IP>:<NODE_PORT>
+export CLUSTER_A_NODE_IP=192.168.10.11
+export CLUSTER_B_NODE_IP=192.168.10.12
+export CLUSTER_C_NODE_IP=192.168.10.13
 ```
+
+说明：
+
+- Cluster A: Company
+- Cluster B: Partner
+- Cluster C: Coordinator
+
+## 第 3 步：执行部署
+
+```bash
+./deploy-multi-cluster.sh
+```
+
+脚本会自动：
+
+1. 检查三个集群连接
+2. 加载三类镜像
+3. 替换三份 values 文件中的 IP 占位符
+4. 部署三个 release：
+   - `mpc-company`
+   - `mpc-partner`
+   - `mpc-coordinator`
+
+## 第 4 步：检查状态
+
+```bash
+kubectl --context=${CLUSTER_A_CONTEXT} -n mpc-test get pods -o wide
+kubectl --context=${CLUSTER_B_CONTEXT} -n mpc-test get pods -o wide
+kubectl --context=${CLUSTER_C_CONTEXT} -n mpc-test get pods -o wide
+```
+
+预期：
+
+- Cluster A: company、webui
+- Cluster B: partner、webui
+- Cluster C: coordinator
+
+## 第 5 步：检查网络与打开 WebUI
+
+运行网络测试：
+
+```bash
+python web_ui/test_network.py
+```
+
+访问地址：
+
+- Company WebUI: `http://<CLUSTER_A_NODE_IP>:30080`
+- Partner WebUI: `http://<CLUSTER_B_NODE_IP>:30081`
+
+训练和推理由 Company WebUI 发起。
+Partner WebUI 仅用于只读观察和数据集协同。
 
 ## 常用命令
 
 ```bash
-# 查看 Helm 发布
-helm list -n mpc-project
+# 查看 Company 日志
+kubectl --context=${CLUSTER_A_CONTEXT} -n mpc-test logs -l app.kubernetes.io/component=company -f
 
-# 升级应用
-helm upgrade my-mpc helm-chart/mobile-mpc-project -n mpc-project
+# 查看 Partner 日志
+kubectl --context=${CLUSTER_B_CONTEXT} -n mpc-test logs -l app.kubernetes.io/component=partner -f
 
-# 卸载应用
-helm uninstall my-mpc -n mpc-project
-
-# 查看详细信息
-helm status my-mpc -n mpc-project
+# 查看 Coordinator 日志
+kubectl --context=${CLUSTER_C_CONTEXT} -n mpc-test logs -l app.kubernetes.io/component=coordinator -f
 ```
 
-## 故障排查
+## 常见问题
 
-### Pod 启动失败
+### 1. Company 和 Coordinator 仍在同一机器
+
+检查：
+
+- [helm-chart/mobile-mpc-project/values-cluster-a.yaml](helm-chart/mobile-mpc-project/values-cluster-a.yaml)
+- [helm-chart/mobile-mpc-project/values-cluster-c.yaml](helm-chart/mobile-mpc-project/values-cluster-c.yaml)
+
+确认 `CLUSTER_A_NODE_IP` 与 `CLUSTER_C_NODE_IP` 不同。
+
+### 2. 训练时报 coordinator 地址错误
+
+检查 Company 部署环境变量：
 
 ```bash
-kubectl describe pod <pod-name> -n mpc-project
-kubectl logs <pod-name> -n mpc-project
+kubectl --context=${CLUSTER_A_CONTEXT} -n mpc-test get deploy -o yaml | grep COORDINATOR_SPU_ADDR
 ```
 
-### 镜像拉取失败
+### 3. 网络测试失败
 
-检查镜像是否存在：
-```bash
-docker pull ${REGISTRY}/mobile-mpc-project:${IMAGE_TAG}
-```
+如果当前集群尚未部署完成，`web_ui/test_network.py` 会显示端口不通，这是正常的。
+真正需要关注的是：
 
-确认镜像拉取密钥配置正确。
+- 三个节点 IP 是否不同
+- 部署完成后端口是否打通
 
-## 下一步
+## 更多文档
 
-- 📖 详细文档：查看 [DEPLOYMENT.md](./DEPLOYMENT.md)
-- 📋 Chart 文档：查看 [helm-chart/mobile-mpc-project/README.md](./helm-chart/mobile-mpc-project/README.md)
-- ⚙️ 配置说明：查看 [values.yaml](./helm-chart/mobile-mpc-project/values.yaml)
-
-## 参考
-
-### 目录结构
-
-```
-mobile_project3_new/
-├── Dockerfile                  # Docker 镜像构建文件
-├── requirements.txt            # Python 依赖
-├── .dockerignore              # Docker 构建忽略
-├── QUICKSTART.md              # 本文件
-├── DEPLOYMENT.md              # 详细部署文档
-├── validate-chart.sh          # Chart 验证脚本
-└── helm-chart/                # Helm Chart
-    └── mobile-mpc-project/
-        ├── Chart.yaml
-        ├── values.yaml
-        └── templates/
-```
-
-### 已创建的 Kubernetes 资源
-
-- ✅ Company Deployment（甲方节点）
-- ✅ Partner Deployment（乙方节点）
-- ✅ Services（网络服务）
-- ✅ ServiceAccount（服务账户）
-- ✅ Ingress（入口，可选）
-- ✅ PVC（持久化存储，可选）
-
-### 示例：本地 Minikube 部署
-
-如果你在本地使用 Minikube：
-
-```bash
-# 启动 Minikube
-minikube start
-
-# 使用 Minikube 的 Docker 环境
-eval $(minikube docker-env)
-
-# 构建镜像（直接在 Minikube 中）
-docker build -t mobile-mpc-project:v1.0.0 .
-
-# 部署（不需要推送到远程仓库）
-helm install my-mpc helm-chart/mobile-mpc-project \
-  -n mpc-project \
-  --create-namespace \
-  --set global.imageRegistry="" \
-  --set company.image.repository=mobile-mpc-project \
-  --set company.image.tag=v1.0.0 \
-  --set company.image.pullPolicy=Never \
-  --set partner.image.repository=mobile-mpc-project \
-  --set partner.image.tag=v1.0.0 \
-  --set partner.image.pullPolicy=Never
-
-# 访问服务
-minikube service my-mpc-mobile-mpc-project-webui -n mpc-project
-```
-
-## 需要帮助？
-
-如有问题，请查看：
-1. Pod 日志：`kubectl logs -n mpc-project <pod-name>`
-2. 事件：`kubectl get events -n mpc-project`
-3. 详细文档：`DEPLOYMENT.md`
-
+- 详细部署： [DEPLOYMENT.md](DEPLOYMENT.md)
+- Chart 文档： [helm-chart/mobile-mpc-project/README.md](helm-chart/mobile-mpc-project/README.md)
+- 本地推理复现： [LOCAL_INFER_REPRO.md](LOCAL_INFER_REPRO.md)
+- 联调流程： [TEST_FLOW.md](TEST_FLOW.md)

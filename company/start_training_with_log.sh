@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# === 只运行训练，输出到日志 ===
-A_IP="210.28.133.104"
-B_IP="210.28.133.104"
-PORT_RAY="20001"
-PORT_COMPANY_SPU="11001"
-PORT_PARTNER_SPU="11002"
-PORT_COORD_SPU="11003"
+# === 只运行训练，输出到日志，地址由环境变量控制 ===
+RAY_HEAD_ADDR="${RAY_HEAD_ADDR:-210.28.133.104:20001}"
+COMPANY_SPU_ADDR="${COMPANY_SPU_ADDR:-210.28.133.104:11001}"
+PARTNER_SPU_ADDR="${PARTNER_SPU_ADDR:-210.28.133.105:11002}"
+COORDINATOR_SPU_ADDR="${COORDINATOR_SPU_ADDR:-210.28.133.106:11003}"
 COM_PATH="."
 PAR_PATH="../partner"
 LOG_FILE="${COM_PATH}/company_run.log"
@@ -40,14 +38,15 @@ echo "" >> "$LOG_FILE"
 echo "==================== 开始训练 ====================" >> "$LOG_FILE"
 echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 开始训练任务" | tee -a "$LOG_FILE"
 echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 训练参数 - Model: ${MODEL}, Epochs: ${N_EPOCHS}, Batch: ${BATCH_SIZE}, LR: ${LEARNING_RATE}, ValSteps: ${VAL_STEPS}, Trees: ${N_ESTIMATORS}, Depth: ${MAX_DEPTH}, Quantiles: ${K_QUANTILES}, Reg: ${REG_COEF}" | tee -a "$LOG_FILE"
+echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] Ray Head: ${RAY_HEAD_ADDR}, Company SPU: ${COMPANY_SPU_ADDR}, Partner SPU: ${PARTNER_SPU_ADDR}, Coordinator SPU: ${COORDINATOR_SPU_ADDR}" | tee -a "$LOG_FILE"
 
 # 运行训练
 python3 truerun.py \
   --mode="multi_distributed" \
-  --ray_head_addr="${A_IP}:${PORT_RAY}" \
-  --company_spu_addr="${A_IP}:${PORT_COMPANY_SPU}" \
-  --partner_spu_addr="${B_IP}:${PORT_PARTNER_SPU}" \
-  --coordinator_spu_addr="${A_IP}:${PORT_COORD_SPU}" \
+  --ray_head_addr="${RAY_HEAD_ADDR}" \
+  --company_spu_addr="${COMPANY_SPU_ADDR}" \
+  --partner_spu_addr="${PARTNER_SPU_ADDR}" \
+  --coordinator_spu_addr="${COORDINATOR_SPU_ADDR}" \
   --run_psi=True \
   \
   --path_to_company_train_dataset="${COM_PATH}/host_train.csv" \

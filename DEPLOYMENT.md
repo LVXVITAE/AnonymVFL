@@ -1,444 +1,296 @@
-# 部署指南 - 移动多方安全计算项目
+# 三机部署指南
 
-本文档详细说明如何将项目打包成 Helm Chart 并部署到 Kubernetes 集群。
+本文档描述当前项目的推荐生产部署方式：将 Company、Partner、Coordinator 分别部署到三台机器或三个 Kubernetes 集群中，避免 Company 与 Coordinator 同机带来的安全风险。
 
-## 目录结构
+## 目标拓扑
 
-```
-mobile_project3_new/
-├── company/                    # 甲方代码
-├── partner/                    # 乙方代码
-├── web_ui/                     # Web 界面
-├── trans/                      # 传输模块
-├── test/                       # 测试文件
-├── Dockerfile                  # Docker 镜像构建文件
-├── requirements.txt            # Python 依赖
-├── .dockerignore              # Docker 构建忽略文件
-└── helm-chart/                 # Helm Chart 目录
-    └── mobile-mpc-project/
-        ├── Chart.yaml          # Chart 元数据
-        ├── values.yaml         # 默认配置值
-        ├── README.md           # Chart 文档
-        ├── .helmignore        # Helm 打包忽略文件
-        └── templates/          # Kubernetes 资源模板
-            ├── _helpers.tpl
-            ├── company-deployment.yaml
-            ├── partner-deployment.yaml
-            ├── service.yaml
-            ├── serviceaccount.yaml
-            ├── ingress.yaml
-            ├── pvc.yaml
-            └── NOTES.txt
-```
+- Machine A / Cluster A: Company
+  - Ray Head
+  - Company SPU
+  - Company WebUI（可写）
+- Machine B / Cluster B: Partner
+  - Ray Worker
+  - Partner SPU
+  - Partner WebUI（只读）
+- Machine C / Cluster C: Coordinator
+  - Ray Worker
+  - Coordinator SPU
 
-## 部署步骤
+## 关键端口
 
-### 第一步：构建 Docker 镜像
+| 角色 | 端口 | 说明 |
+|------|------|------|
+| Company | 6379 | Ray Head |
+| Company | 9394 | Company SPU |
+| Company WebUI | 30080 | NodePort 示例 |
+| Partner | 9395 | Partner SPU |
+| Partner WebUI | 30081 | NodePort 示例 |
+| Coordinator | 9396 | Coordinator SPU |
 
-1. **准备镜像仓库**
+如果使用 `hostNetwork: true`，Machine A/B/C 之间需要放通上述端口。
 
-   确保你有可访问的 Docker 镜像仓库（Docker Hub、Harbor、阿里云等）。
+## 相关文件
 
-2. **登录镜像仓库**
+- [build-multi-cluster-images.sh](build-multi-cluster-images.sh): 构建三类镜像
+- [deploy-multi-cluster.sh](deploy-multi-cluster.sh): 三集群部署脚本
+- [Dockerfile.company](Dockerfile.company): Company 镜像
+- [Dockerfile.partner](Dockerfile.partner): Partner 镜像
+- [Dockerfile.coordinator](Dockerfile.coordinator): Coordinator 镜像
+- [helm-chart/mobile-mpc-project/values-cluster-a.yaml](helm-chart/mobile-mpc-project/values-cluster-a.yaml): Company 集群配置
+- [helm-chart/mobile-mpc-project/values-cluster-b.yaml](helm-chart/mobile-mpc-project/values-cluster-b.yaml): Partner 集群配置
+- [helm-chart/mobile-mpc-project/values-cluster-c.yaml](helm-chart/mobile-mpc-project/values-cluster-c.yaml): Coordinator 集群配置
+- [web_ui/config.yaml](web_ui/config.yaml): WebUI 网络与节点配置示例
+- [web_ui/test_network.py](web_ui/test_network.py): 三机连通性检查脚本
 
-   ```bash
-   # Docker Hub
-   docker login
-   
-   # 私有仓库
-   docker login registry.example.com
-   ```
+## 前置条件
 
-3. **构建镜像**
+1. 三台机器或三个 Kubernetes 集群之间网络互通。
+2. Company 机器可访问 Partner `9395` 和 Coordinator `9396`。
+3. Partner 与 Coordinator 可访问 Company `6379`。
+4. 本地具备以下工具：
+   - `docker`
+   - `kubectl`
+   - `helm`
+5. 三个 kube context 已就绪：
+   - `cluster-a`
+   - `cluster-b`
+   - `cluster-c`
 
-   ```bash
-   cd /home/dxn/mobile_project_final/mobile_project3_new
-   
-   # 构建镜像（替换为你的仓库地址）
-   docker build -t registry.example.com/mpc/mobile-mpc-project:v1.0.0 .
-   
-   # 也可以打多个标签
-   docker tag registry.example.com/mpc/mobile-mpc-project:v1.0.0 \
-              registry.example.com/mpc/mobile-mpc-project:latest
-   ```
+## 第一步：确认三机地址
 
-4. **推送镜像**
+示例：
 
-   ```bash
-   docker push registry.example.com/mpc/mobile-mpc-project:v1.0.0
-   docker push registry.example.com/mpc/mobile-mpc-project:latest
-   ```
+- Company: `192.168.10.11`
+- Partner: `192.168.10.12`
+- Coordinator: `192.168.10.13`
 
-5. **验证镜像**
+在部署前，请把这三个地址分别代入：
 
-   ```bash
-   # 测试镜像是否可以正常运行
-   docker run --rm registry.example.com/mpc/mobile-mpc-project:v1.0.0 python --version
-   ```
+- [helm-chart/mobile-mpc-project/values-cluster-a.yaml](helm-chart/mobile-mpc-project/values-cluster-a.yaml)
+- [helm-chart/mobile-mpc-project/values-cluster-b.yaml](helm-chart/mobile-mpc-project/values-cluster-b.yaml)
+- [helm-chart/mobile-mpc-project/values-cluster-c.yaml](helm-chart/mobile-mpc-project/values-cluster-c.yaml)
 
-### 第二步：配置 Helm Chart
+如果使用部署脚本，则无需手工替换，脚本会自动完成占位符替换。
 
-1. **编辑 values.yaml**
+## 第二步：构建三类镜像
 
-   根据你的环境修改 `helm-chart/mobile-mpc-project/values.yaml`：
-
-   ```yaml
-   global:
-     # 修改为你的镜像仓库地址
-     imageRegistry: "registry.example.com/mpc/"
-     imagePullPolicy: IfNotPresent
-   
-   company:
-     enabled: true
-     image:
-       repository: mobile-mpc-project
-       tag: "v1.0.0"
-     resources:
-       limits:
-         cpu: "2"
-         memory: 4Gi
-       requests:
-         cpu: "1"
-         memory: 2Gi
-   
-   partner:
-     enabled: true
-     image:
-       repository: mobile-mpc-project
-       tag: "v1.0.0"
-   
-   webui:
-     enabled: true
-     service:
-       type: LoadBalancer  # 或 NodePort、ClusterIP
-   ```
-
-2. **创建自定义配置文件（可选）**
-
-   ```bash
-   cat > custom-values.yaml <<EOF
-   global:
-     imageRegistry: "your-registry.com/mpc/"
-   
-   company:
-     resources:
-       limits:
-         cpu: "4"
-         memory: 8Gi
-   
-   webui:
-     ingress:
-       enabled: true
-       hosts:
-         - host: mpc.example.com
-           paths:
-             - path: /
-               pathType: Prefix
-   EOF
-   ```
-
-### 第三步：验证 Helm Chart
-
-1. **检查 Chart 语法**
-
-   ```bash
-   cd /home/dxn/mobile_project_final/mobile_project3_new
-   
-   # Lint 检查
-   helm lint helm-chart/mobile-mpc-project
-   ```
-
-2. **模板渲染测试**
-
-   ```bash
-   # 渲染模板查看生成的 YAML
-   helm template my-mpc helm-chart/mobile-mpc-project
-   
-   # 使用自定义配置渲染
-   helm template my-mpc helm-chart/mobile-mpc-project -f custom-values.yaml
-   
-   # 输出到文件检查
-   helm template my-mpc helm-chart/mobile-mpc-project > rendered.yaml
-   ```
-
-3. **Dry-run 测试**
-
-   ```bash
-   # 模拟安装（不实际创建资源）
-   helm install my-mpc helm-chart/mobile-mpc-project --dry-run --debug
-   ```
-
-### 第四步：部署到 Kubernetes
-
-1. **确保 Kubernetes 集群可访问**
-
-   ```bash
-   kubectl cluster-info
-   kubectl get nodes
-   ```
-
-2. **创建命名空间**
-
-   ```bash
-   kubectl create namespace mpc-project
-   ```
-
-3. **创建镜像拉取密钥（如果使用私有仓库）**
-
-   ```bash
-   kubectl create secret docker-registry regcred \
-     --docker-server=registry.example.com \
-     --docker-username=<your-username> \
-     --docker-password=<your-password> \
-     --docker-email=<your-email> \
-     -n mpc-project
-   ```
-   
-   然后在 values.yaml 中启用：
-   ```yaml
-   imagePullSecrets:
-     - name: regcred
-   ```
-
-4. **安装 Chart**
-
-   ```bash
-   # 基本安装
-   helm install my-mpc helm-chart/mobile-mpc-project -n mpc-project
-   
-   # 使用自定义配置安装
-   helm install my-mpc helm-chart/mobile-mpc-project \
-     -n mpc-project \
-     -f custom-values.yaml
-   
-   # 安装并等待就绪
-   helm install my-mpc helm-chart/mobile-mpc-project \
-     -n mpc-project \
-     --wait --timeout 10m
-   ```
-
-5. **查看部署状态**
-
-   ```bash
-   # 查看 Helm 发布
-   helm list -n mpc-project
-   
-   # 查看发布详情
-   helm status my-mpc -n mpc-project
-   
-   # 查看 Pod 状态
-   kubectl get pods -n mpc-project
-   
-   # 查看所有资源
-   kubectl get all -n mpc-project
-   ```
-
-### 第五步：访问应用
-
-1. **查看服务**
-
-   ```bash
-   kubectl get svc -n mpc-project
-   ```
-
-2. **访问 Web UI**
-
-   根据服务类型：
-
-   **LoadBalancer:**
-   ```bash
-   export SERVICE_IP=$(kubectl get svc my-mpc-webui -n mpc-project \
-     -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-   echo "访问地址: http://$SERVICE_IP:8080"
-   ```
-
-   **NodePort:**
-   ```bash
-   export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
-   export NODE_PORT=$(kubectl get svc my-mpc-webui -n mpc-project \
-     -o jsonpath='{.spec.ports[0].nodePort}')
-   echo "访问地址: http://$NODE_IP:$NODE_PORT"
-   ```
-
-   **ClusterIP (端口转发):**
-   ```bash
-   kubectl port-forward -n mpc-project svc/my-mpc-webui 8080:8080
-   # 访问 http://localhost:8080
-   ```
-
-3. **查看日志**
-
-   ```bash
-   # Company 节点日志
-   kubectl logs -n mpc-project -l app.kubernetes.io/component=company -f
-   
-   # Partner 节点日志
-   kubectl logs -n mpc-project -l app.kubernetes.io/component=partner -f
-   
-   # 所有 Pod 日志
-   kubectl logs -n mpc-project --all-containers=true -l app.kubernetes.io/instance=my-mpc
-   ```
-
-### 第六步：打包 Chart（可选）
-
-如果需要分发 Chart：
+执行：
 
 ```bash
-# 打包成 .tgz 文件
-helm package helm-chart/mobile-mpc-project
-
-# 生成 mobile-mpc-project-0.1.0.tgz
-
-# 创建 Chart 仓库索引
-helm repo index . --url https://your-charts-repo.com
-
-# 上传到 Chart 仓库
-# 可以使用 ChartMuseum、Harbor、GitHub Pages 等
+./build-multi-cluster-images.sh v1.0.19
 ```
 
-## 升级和维护
+脚本会构建并导出：
 
-### 升级应用
+- `mobile-mpc-company:v1.0.19`
+- `mobile-mpc-partner:v1.0.19`
+- `mobile-mpc-coordinator:v1.0.19`
+
+以及对应 tar 文件：
+
+- `mobile-mpc-company-v1.0.19.tar`
+- `mobile-mpc-partner-v1.0.19.tar`
+- `mobile-mpc-coordinator-v1.0.19.tar`
+
+## 第三步：加载镜像到目标环境
+
+如果目标集群不直接拉取镜像仓库，可在对应节点或集群中加载 tar：
 
 ```bash
-# 修改 values.yaml 或代码后
-
-# 1. 重新构建镜像
-docker build -t registry.example.com/mpc/mobile-mpc-project:v1.1.0 .
-docker push registry.example.com/mpc/mobile-mpc-project:v1.1.0
-
-# 2. 升级 Helm 发布
-helm upgrade my-mpc helm-chart/mobile-mpc-project \
-  -n mpc-project \
-  --set company.image.tag=v1.1.0 \
-  --set partner.image.tag=v1.1.0
-
-# 或使用新的 values 文件
-helm upgrade my-mpc helm-chart/mobile-mpc-project \
-  -n mpc-project \
-  -f custom-values.yaml
+docker load -i mobile-mpc-company-v1.0.19.tar
+docker load -i mobile-mpc-partner-v1.0.19.tar
+docker load -i mobile-mpc-coordinator-v1.0.19.tar
 ```
 
-### 回滚
+## 第四步：校验 Helm 模板
+
+建议在正式部署前执行：
 
 ```bash
-# 查看历史版本
-helm history my-mpc -n mpc-project
+helm lint helm-chart/mobile-mpc-project
 
-# 回滚到上一版本
-helm rollback my-mpc -n mpc-project
+helm template mpc-company helm-chart/mobile-mpc-project \
+  -f helm-chart/mobile-mpc-project/values-cluster-a.yaml
 
-# 回滚到指定版本
-helm rollback my-mpc 1 -n mpc-project
+helm template mpc-partner helm-chart/mobile-mpc-project \
+  -f helm-chart/mobile-mpc-project/values-cluster-b.yaml
+
+helm template mpc-coordinator helm-chart/mobile-mpc-project \
+  -f helm-chart/mobile-mpc-project/values-cluster-c.yaml
 ```
 
-### 卸载
+重点检查：
+
+1. Company Deployment 不再暴露 Coordinator 端口。
+2. Coordinator Service selector 指向 `app.kubernetes.io/component: coordinator`。
+3. Company Ray Head 只声明 `company` 资源。
+4. Coordinator Deployment 声明 `coordinator` 资源并通过 `RAY_HEAD_ADDR` 加入 Company。
+
+## 第五步：执行三集群部署
+
+直接使用脚本：
 
 ```bash
-# 卸载 Helm 发布
-helm uninstall my-mpc -n mpc-project
+export CLUSTER_A_CONTEXT=cluster-a
+export CLUSTER_B_CONTEXT=cluster-b
+export CLUSTER_C_CONTEXT=cluster-c
 
-# 删除命名空间（慎用）
-kubectl delete namespace mpc-project
+export CLUSTER_A_NODE_IP=192.168.10.11
+export CLUSTER_B_NODE_IP=192.168.10.12
+export CLUSTER_C_NODE_IP=192.168.10.13
+
+./deploy-multi-cluster.sh
 ```
+
+该脚本会：
+
+1. 检查三个集群的连接状态。
+2. 加载 Company、Partner、Coordinator 三类镜像。
+3. 生成三份临时 values 文件并替换 IP 占位符。
+4. 依次部署：
+   - `mpc-company`
+   - `mpc-partner`
+   - `mpc-coordinator`
+
+## 第六步：查看部署状态
+
+```bash
+kubectl --context=cluster-a -n mpc-test get pods -o wide
+kubectl --context=cluster-b -n mpc-test get pods -o wide
+kubectl --context=cluster-c -n mpc-test get pods -o wide
+```
+
+预期：
+
+- Cluster A: `company`、`webui`
+- Cluster B: `partner`、`webui`
+- Cluster C: `coordinator`
+
+查看日志：
+
+```bash
+kubectl --context=cluster-a -n mpc-test logs -l app.kubernetes.io/component=company -f
+kubectl --context=cluster-b -n mpc-test logs -l app.kubernetes.io/component=partner -f
+kubectl --context=cluster-c -n mpc-test logs -l app.kubernetes.io/component=coordinator -f
+```
+
+## 第七步：验证三机分离
+
+### 方式一：检查 WebUI 配置
+
+查看 [web_ui/config.yaml](web_ui/config.yaml)，确认：
+
+- `company.ip` 不等于 `partner.ip`
+- `partner.ip` 不等于 `coordinator.ip`
+- `company.ip` 不等于 `coordinator.ip`
+
+### 方式二：执行网络测试脚本
+
+```bash
+python web_ui/test_network.py
+```
+
+脚本会检查：
+
+1. Company 的 Ray 端口和 SPU 端口。
+2. Partner 的 SPU 端口。
+3. Coordinator 的 SPU 端口。
+4. 三个节点 IP 是否彼此不同。
+5. 本地 WebUI 端口与可选远端 WebUI API 连通性。
+
+### 方式三：检查 Company 容器是否仍承载 Coordinator
+
+```bash
+kubectl --context=cluster-a -n mpc-test describe pod -l app.kubernetes.io/component=company
+kubectl --context=cluster-c -n mpc-test describe pod -l app.kubernetes.io/component=coordinator
+```
+
+检查点：
+
+- Company 不应再监听 `9396`
+- Coordinator 应独立监听 `9396`
+
+## 第八步：发起训练与推理
+
+- Company WebUI 地址：`http://<CLUSTER_A_NODE_IP>:30080`
+- Partner WebUI 地址：`http://<CLUSTER_B_NODE_IP>:30081`
+
+训练和推理由 Company WebUI 发起。
+Partner WebUI 仅用于只读观察和数据集协同。
+
+当前实现中，训练/推理命令会使用环境变量 `COORDINATOR_SPU_ADDR`，不会再把 Coordinator 地址自动绑定到 Company 本地 IP。
 
 ## 故障排查
 
-### Pod 启动失败
+### 1. Partner 或 Coordinator 无法加入 Ray
+
+检查：
 
 ```bash
-# 查看 Pod 详情
-kubectl describe pod <pod-name> -n mpc-project
-
-# 查看事件
-kubectl get events -n mpc-project --sort-by='.lastTimestamp'
-
-# 查看 Pod 日志
-kubectl logs <pod-name> -n mpc-project
-
-# 进入 Pod 调试
-kubectl exec -it <pod-name> -n mpc-project -- /bin/bash
+kubectl --context=cluster-a -n mpc-test logs -l app.kubernetes.io/component=company
+kubectl --context=cluster-b -n mpc-test logs -l app.kubernetes.io/component=partner
+kubectl --context=cluster-c -n mpc-test logs -l app.kubernetes.io/component=coordinator
 ```
 
-### 镜像拉取失败
+确认：
+
+- Company `6379` 可达
+- `RAY_HEAD_ADDR` 配置正确
+- 三台机器间无防火墙阻断
+
+### 2. 训练报 coordinator 地址错误
+
+检查 Company Deployment 环境变量：
 
 ```bash
-# 检查镜像拉取密钥
-kubectl get secret regcred -n mpc-project
-
-# 测试镜像是否可访问
-docker pull registry.example.com/mpc/mobile-mpc-project:v1.0.0
-
-# 检查 Pod 的镜像拉取状态
-kubectl describe pod <pod-name> -n mpc-project | grep -A 5 "Events"
+kubectl --context=cluster-a -n mpc-test get deploy -o yaml | grep -n COORDINATOR_SPU_ADDR
 ```
 
-### 服务连通性问题
+应指向 Machine C，例如：
+
+```text
+COORDINATOR_SPU_ADDR=192.168.10.13:9396
+```
+
+### 3. WebUI 能打开但训练失败
+
+重点检查：
+
+- Partner `9395` 是否可达
+- Coordinator `9396` 是否可达
+- Company Pod 日志中输出的三方地址是否分别落在三台机器上
+
+## 回滚与清理
+
+卸载：
 
 ```bash
-# 测试服务 DNS 解析
-kubectl run -it --rm debug --image=busybox --restart=Never -n mpc-project -- nslookup my-mpc-company-svc
-
-# 测试端口连通性
-kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -n mpc-project -- bash
-# 在容器内执行
-curl my-mpc-company-svc:9394
-telnet my-mpc-company-svc 9394
+helm --kube-context=cluster-a uninstall mpc-company -n mpc-test
+helm --kube-context=cluster-b uninstall mpc-partner -n mpc-test
+helm --kube-context=cluster-c uninstall mpc-coordinator -n mpc-test
 ```
 
-### 资源不足
+删除命名空间：
 
 ```bash
-# 查看节点资源使用情况
-kubectl top nodes
-
-# 查看 Pod 资源使用情况
-kubectl top pods -n mpc-project
-
-# 调整资源限制
-helm upgrade my-mpc helm-chart/mobile-mpc-project \
-  -n mpc-project \
-  --set company.resources.limits.memory=8Gi
+kubectl --context=cluster-a delete namespace mpc-test
+kubectl --context=cluster-b delete namespace mpc-test
+kubectl --context=cluster-c delete namespace mpc-test
 ```
 
-## 生产环境建议
+## 当前实现范围
 
-1. **使用持久化存储**
-   - 启用 PVC 保存模型和数据
-   - 配置适当的 StorageClass
+本次改造已经完成以下核心能力：
 
-2. **配置资源限制**
-   - 根据实际负载调整 CPU 和内存
-   - 启用 HPA（水平自动扩缩容）
+1. Coordinator 独立 Deployment 与镜像。
+2. Company 不再兼任 Coordinator。
+3. WebUI 训练与推理链路使用独立 Coordinator 地址。
+4. 三集群部署脚本支持 A/B/C 三端。
 
-3. **安全配置**
-   - 使用 RBAC 控制权限
-   - 配置 Network Policy
-   - 启用 Pod Security Policy
+未覆盖内容：
 
-4. **监控和日志**
-   - 集成 Prometheus 监控
-   - 配置 ELK/EFK 日志收集
-   - 设置告警规则
+1. mTLS 或服务间双向认证。
+2. 更严格的 NetworkPolicy。
+3. Coordinator 最小权限镜像裁剪。
 
-5. **高可用**
-   - 配置多副本
-   - 使用亲和性规则分散 Pod
-   - 配置 PodDisruptionBudget
-
-6. **备份策略**
-   - 定期备份持久化数据
-   - 保存 Helm values 配置
-   - 记录镜像版本
-
-## 参考资源
-
-- [Helm 官方文档](https://helm.sh/docs/)
-- [Kubernetes 官方文档](https://kubernetes.io/docs/)
-- [SecretFlow 文档](https://www.secretflow.org.cn/)
-- 项目 README: `helm-chart/mobile-mpc-project/README.md`
-
-## 联系支持
-
-如有问题，请联系技术团队：team@example.com
-
+如果要进一步提升生产安全性，建议下一阶段加入网络策略、访问白名单和服务审计。

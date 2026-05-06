@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# === 运行训练任务（假设Ray已经启动）===
-A_IP="210.28.133.104"
-B_IP="210.28.133.104"
-PORT_RAY="20001"
-PORT_COMPANY_SPU="11001"
-PORT_PARTNER_SPU="11002"
-PORT_COORD_SPU="11003"
+# === 运行训练任务（假设 Ray 已启动，地址由环境变量控制）===
+RAY_HEAD_ADDR="${RAY_HEAD_ADDR:-210.28.133.104:20001}"
+COMPANY_SPU_ADDR="${COMPANY_SPU_ADDR:-210.28.133.104:11001}"
+PARTNER_SPU_ADDR="${PARTNER_SPU_ADDR:-210.28.133.105:11002}"
+COORDINATOR_SPU_ADDR="${COORDINATOR_SPU_ADDR:-210.28.133.106:11003}"
 
 cd "$(dirname "$0")"
 COM_PATH="."
@@ -35,14 +33,18 @@ fi
 mkdir -p "${COMPANY_MODEL_DIR}" "${PARTNER_MODEL_DIR}"
 
 echo "正在启动训练任务 (Model=${MODEL})..."
+echo "Ray Head: ${RAY_HEAD_ADDR}"
+echo "Company SPU: ${COMPANY_SPU_ADDR}"
+echo "Partner SPU: ${PARTNER_SPU_ADDR}"
+echo "Coordinator SPU: ${COORDINATOR_SPU_ADDR}"
 
 # 运行训练
 python3 truerun.py \
   --mode="multi_distributed" \
-  --ray_head_addr="${A_IP}:${PORT_RAY}" \
-  --company_spu_addr="${A_IP}:${PORT_COMPANY_SPU}" \
-  --partner_spu_addr="${B_IP}:${PORT_PARTNER_SPU}" \
-  --coordinator_spu_addr="${A_IP}:${PORT_COORD_SPU}" \
+  --ray_head_addr="${RAY_HEAD_ADDR}" \
+  --company_spu_addr="${COMPANY_SPU_ADDR}" \
+  --partner_spu_addr="${PARTNER_SPU_ADDR}" \
+  --coordinator_spu_addr="${COORDINATOR_SPU_ADDR}" \
   --run_psi=True \
   \
   --path_to_company_train_dataset="${COM_PATH}/host_train.csv" \

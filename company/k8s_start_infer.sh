@@ -67,6 +67,7 @@ echo "=== K8s 推理模式 ==="
 echo "Company IP:       ${A_IP}"
 echo "Partner SPU Addr: ${B_ADDR}"
 echo "Ray Head:         ${A_IP}:${PORT_RAY}"
+echo "Coordinator SPU:  ${COORDINATOR_SPU_ADDR:-${A_IP}:${PORT_COORD_SPU}}"
 echo "Model:            ${MODEL}"
 
 if ! ray status &>/dev/null; then
@@ -78,7 +79,7 @@ python3 infer_run.py \
   --ray_head_addr="${A_IP}:${PORT_RAY}" \
   --company_spu_addr="${A_IP}:${PORT_COMPANY_SPU}" \
   --partner_spu_addr="${B_ADDR}" \
-  --coordinator_spu_addr="${A_IP}:${PORT_COORD_SPU}" \
+  --coordinator_spu_addr="${COORDINATOR_SPU_ADDR:-${A_IP}:${PORT_COORD_SPU}}" \
   --model="${MODEL}" \
   --company_model_path="${COMPANY_MODEL_DIR}" \
   --partner_model_path="${PARTNER_MODEL_DIR}" \

@@ -2,15 +2,14 @@
 set -euo pipefail
 
 # === B = partner (worker 节点) ===
-A_IP="210.28.133.104"
-PORT_RAY="20001"
+RAY_HEAD_ADDR="${RAY_HEAD_ADDR:-210.28.133.104:20001}"
 
 cd "$(dirname "$0")"
 
 # B 加入 Ray 集群，只打 partner 资源
 # 为避免与 head 端口冲突，单独指定 node-manager/object-manager/worker 端口段
 # ray stop || true
-ray start --address "${A_IP}:${PORT_RAY}" \
+ray start --address "${RAY_HEAD_ADDR}" \
   --node-manager-port=54001 \
   --object-manager-port=54002 \
   --min-worker-port=54003 \

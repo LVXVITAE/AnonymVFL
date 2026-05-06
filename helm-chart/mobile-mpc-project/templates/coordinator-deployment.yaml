@@ -1,0 +1,116 @@
+{{- if .Values.coordinator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mobile-mpc.fullname" . }}-coordinator
+  labels:
+    {{- include "mobile-mpc.coordinator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.coordinator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mobile-mpc.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      labels:
+        {{- include "mobile-mpc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: coordinator
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "mobile-mpc.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: coordinator
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: {{ include "mobile-mpc.image" (dict "image" .Values.coordinator.image "Chart" .Chart "Values" .Values) }}
+        imagePullPolicy: {{ .Values.coordinator.image.pullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            echo "🚀 启动 Coordinator 节点..."
+
+            echo "🧹 清理旧的 Ray 资源..."
+            ray stop --force || true
+            sleep 2
+
+            export HOST_IP=${POD_IP}
+            echo "📍 Host IP: $HOST_IP"
+
+            if [ -z "$RAY_HEAD_ADDR" ]; then
+              echo "❌ 缺少 RAY_HEAD_ADDR 环境变量，无法连接 Company Ray Head"
+              exit 1
+            fi
+
+            if [ -z "$COORDINATOR_SPU_ADDR" ]; then
+              COORDINATOR_SPU_ADDR="$HOST_IP:{{ .Values.coordinator.service.ports.spu }}"
+            fi
+
+            echo "📍 Ray Head 地址: $RAY_HEAD_ADDR"
+            echo "📍 Coordinator SPU 地址: $COORDINATOR_SPU_ADDR"
+
+            while true; do
+              echo "⏰ $(date '+%Y-%m-%d %H:%M:%S') - 启动/重连 Coordinator Ray Worker..."
+              ray stop --force 2>/dev/null || true
+              sleep 2
+
+              ray start \
+                --address=$RAY_HEAD_ADDR \
+                --node-ip-address=$HOST_IP \
+                --resources='{"coordinator": 10}' \
+                --num-cpus={{ .Values.coordinator.resources.requests.cpu | default 2 }} \
+                --block
+
+              EXIT_CODE=$?
+              echo "⚠️ Coordinator Ray Worker 退出 (exit code: $EXIT_CODE)，5秒后重试"
+              sleep 5
+            done
+        ports:
+        - name: spu
+          containerPort: {{ .Values.coordinator.service.ports.spu }}
+          protocol: TCP
+        env:
+        {{- include "mobile-mpc.commonEnv" . | nindent 8 }}
+        {{- with .Values.coordinator.env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        - name: logs
+          mountPath: /app/logs
+        - name: dshm
+          mountPath: /dev/shm
+        {{- if .Values.global.resourcesEnabled }}
+        resources:
+          {{- toYaml .Values.coordinator.resources | nindent 10 }}
+        {{- end }}
+      volumes:
+      - name: data
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Gi
+      {{- with .Values.coordinator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coordinator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coordinator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

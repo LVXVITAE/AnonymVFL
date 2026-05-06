@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# === 只启动 Ray head，不运行训练 ===
-A_IP="210.28.133.104"
-PORT_RAY="20001"
+# === 只启动 Company 所在机器的 Ray head，不运行训练 ===
+RAY_HEAD_HOST="${RAY_HEAD_HOST:-210.28.133.104}"
+RAY_PORT="${RAY_PORT:-20001}"
 
 cd "$(dirname "$0")"
 
 echo "正在启动Ray集群..."
 
-# 启动 Ray head（只打 company/coordinator 资源）
-ray start --head --node-ip-address "${A_IP}" --port "${PORT_RAY}" \
+# 启动 Ray head（只打 company 资源）
+ray start --head --node-ip-address "${RAY_HEAD_HOST}" --port "${RAY_PORT}" \
   --num-cpus 8 \
-  --resources='{"company": 10, "coordinator": 10}' \
+    --resources='{"company": 10}' \
   --object-store-memory=2000000000
 
 echo "✅ Ray head启动成功"
-echo "📍 Ray集群地址: ${A_IP}:${PORT_RAY}"
+echo "📍 Ray集群地址: ${RAY_HEAD_HOST}:${RAY_PORT}"
 
 # 等待GCS服务完全启动（重要！）
 echo "等待GCS服务就绪..."

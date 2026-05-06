@@ -1,11 +1,11 @@
 company:
-  ip: 210.28.133.104
-  port_ray: 20001
-  port_spu: 11001
+  ip: 192.168.10.11
+  port_ray: 6379
+  port_spu: 9394
   path: company
 coordinator:
-  ip: 210.28.133.104
-  port_spu: 11003
+  ip: 192.168.10.13
+  port_spu: 9396
 logging:
   log_file: federated_learning.log
   log_level: INFO
@@ -14,9 +14,12 @@ network:
   heartbeat_interval: 10
   retry_count: 3
   timeout: 30
+remote_webui:
+  company_url: http://192.168.10.11:30080/api/status
+  partner_url: http://192.168.10.12:30081/api/status
 partner:
-  ip: 210.28.133.104
-  port_spu: 11002
+  ip: 192.168.10.12
+  port_spu: 9395
   path: partner 
 training:
   K_quantiles: 1

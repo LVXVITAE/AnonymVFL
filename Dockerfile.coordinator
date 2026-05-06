@@ -1,0 +1,32 @@
+# Coordinator 节点专用镜像 - 移动联邦学习项目
+FROM python:3.10
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Coordinator 需要 SecretFlow/Ray 运行时，以及 company 中的初始化与推理入口代码
+COPY company/ ./company/
+COPY trans/ ./trans/
+COPY web_ui/ ./web_ui/
+COPY data_full.csv .
+
+RUN mkdir -p /app/logs
+
+ENV JAX_PLATFORMS=cpu \
+    XLA_FLAGS="--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false" \
+    OMP_NUM_THREADS=1 \
+    PYTHONUNBUFFERED=1 \
+    NODE_ROLE=coordinator
+
+EXPOSE 9396
+
+# 实际启动命令由 Helm coordinator deployment 覆盖
+CMD ["python3", "-c", "print('Coordinator image ready')"]

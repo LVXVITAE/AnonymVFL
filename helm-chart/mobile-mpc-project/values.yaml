@@ -35,7 +35,7 @@ company:
   # SPU 地址配置 (address - 用于其他节点连接)
   spuAddr: "mpc-test-mobile-mpc-project-company-svc:9394"  # Company Service 名称
   partnerSpuAddr: "mpc-test-mobile-mpc-project-partner-svc:9395"  # Partner Service 名称
-  coordinatorSpuAddr: "mpc-test-mobile-mpc-project-company-svc:9396"  # Coordinator 独立端口
+  coordinatorSpuAddr: "mpc-test-mobile-mpc-project-coordinator-svc:9396"  # Coordinator 独立 Service
   rayHeadAddr: "company-svc:6379"
   
   # 服务配置
@@ -43,7 +43,6 @@ company:
     type: ClusterIP
     ports:
       spu: 9394          # Company 端口
-      coordinator: 9396  # Coordinator 端口
       ray: 6379
       webui: 8080
   
@@ -64,6 +63,8 @@ company:
       value: "INFO"
     - name: JAX_PLATFORMS
       value: "cpu"
+    - name: COORDINATOR_SPU_ADDR
+      value: "mpc-test-mobile-mpc-project-coordinator-svc:9396"
   
   # 持久化存储
   persistence:
@@ -100,7 +101,7 @@ partner:
   # SPU 地址配置
   spuAddr: "0.0.0.0:9395"
   companySpuAddr: "mpc-test-mobile-mpc-project-company-svc:9394"
-  coordinatorSpuAddr: "mpc-test-mobile-mpc-project-company-svc:9394"
+  coordinatorSpuAddr: "mpc-test-mobile-mpc-project-coordinator-svc:9396"
   rayHeadAddr: "company-svc:6379"
   
   # 服务配置
@@ -181,14 +182,26 @@ coordinator:
     type: ClusterIP
     ports:
       spu: 9396
+    nodePorts:
+      spu: 30396
   
   resources:
     limits:
-      cpu: "1"
+      cpu: "4"
       memory: 2Gi
     requests:
-      cpu: "0.5"
+      cpu: "2"
       memory: 1Gi
+  env:
+    - name: NODE_ROLE
+      value: "coordinator"
+    - name: COORDINATOR_SPU_ADDR
+      value: "0.0.0.0:9396"
+    - name: RAY_HEAD_ADDR
+      value: "mpc-test-mobile-mpc-project-company-svc:6379"
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
 
 # Web UI 配置
 webui:

@@ -8,7 +8,7 @@
 
 ## 2. 前置条件
 
-- 项目目录：`/home/dxn/mobile_project_final/mobile_project3_new`
+- 项目目录：`/home/lvx_vitae/AnonymVFL`
 - Python 环境已安装项目依赖（含 `secretflow`）
 - 使用仓库自带数据：
   - `company/host_train.csv`
@@ -23,7 +23,7 @@
 先进入目录：
 
 ```bash
-cd /home/dxn/mobile_project_final/mobile_project3_new/company
+cd /home/lvx_vitae/AnonymVFL/company
 ```
 
 ### 3.1 本地训练（single_sim）
@@ -116,10 +116,15 @@ PY
 ## 6. 建议的排错顺序
 
 1. 先用 `single_sim` 复现并修复维度问题  
-2. 本地推理稳定后，再回到 K8s 做双集群联调  
+2. 本地推理稳定后，再回到 K8s 做三机联调  
 3. K8s 中重点核对推理命令里的四个地址：  
    - `ray_head_addr`
    - `company_spu_addr`
    - `partner_spu_addr`
    - `coordinator_spu_addr`
+
+补充说明：
+
+- 当前生产拓扑推荐为 Company、Partner、Coordinator 三机分离。
+- 即使本地 `single_sim` 复现通过，回到部署环境时仍需确认 `coordinator_spu_addr` 指向第三台机器，而不是 Company 本机。
 

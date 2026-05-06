@@ -17,7 +17,7 @@ partner:
     tag: "v1.0.19"
     pullPolicy: "Never"  # 使用本地镜像
   
-  replicas: 1
+  replicaCount: 1
   
   resources:
     requests:
@@ -44,7 +44,7 @@ partner:
     enabled: true  # 启用跨集群通信
     # Partner 节点的外部访问地址（供 Company Ray Head 连接）
     # 格式: <NodeIP>:<NodePort>
-    externalAddress: "192.168.58.2:30001"  # 需要替换为实际的集群 B 节点 IP
+    externalAddress: "CLUSTER_B_NODE_IP:30001"  # 需要替换为实际的集群 B 节点 IP
   
   env:
     - name: NODE_ROLE
@@ -53,11 +53,15 @@ partner:
       value: "0.0.0.0:9395"
     # hostNetwork 模式：直接使用节点 IP 和服务端口（无需 NodePort）
     - name: COMPANY_SPU_ADDR
-      value: "192.168.49.2:9394"  # 集群 A 节点 IP + 直接端口
+      value: "CLUSTER_A_NODE_IP:9394"  # 集群 A 节点 IP + 直接端口
     - name: COORDINATOR_SPU_ADDR
-      value: "192.168.49.2:9396"
+      value: "CLUSTER_C_NODE_IP:9396"
     - name: RAY_HEAD_ADDR
-      value: "192.168.49.2:6379"  # 使用直接端口，不再需要 NodePort
+      value: "CLUSTER_A_NODE_IP:6379"  # 使用直接端口，不再需要 NodePort
+
+# Coordinator 节点配置
+coordinator:
+  enabled: false  # 集群 B 不部署 Coordinator
 
 # Web UI 配置（只读模式）
 webui:
@@ -68,7 +72,7 @@ webui:
     tag: "v1.0.19"
     pullPolicy: "Never"
   
-  replicas: 1
+  replicaCount: 1
   
   resources:
     requests:
@@ -91,7 +95,7 @@ webui:
     # Company WebUI 的访问地址，用于 Partner 只读节点代理训练状态
     # 格式：http://<集群A节点IP>:<WebUI NodePort>
     - name: COMPANY_WEBUI_URL
-      value: "http://192.168.49.2:30080"
+      value: "http://CLUSTER_A_NODE_IP:30080"
 
 # 持久化存储配置
 persistence:

@@ -1,0 +1,51 @@
+# 集群 C (Coordinator 集群) 配置
+# 只部署 Coordinator 节点，不部署 Company/Partner/WebUI
+
+global:
+  imageRegistry: ""  # 留空使用本地镜像
+
+company:
+  enabled: false
+
+partner:
+  enabled: false
+
+webui:
+  enabled: false
+
+coordinator:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: "mobile-mpc-coordinator"
+    tag: "v1.0.19"
+    pullPolicy: "Never"
+
+  service:
+    type: NodePort
+    ports:
+      spu: 9396
+    nodePorts:
+      spu: 30396
+
+  resources:
+    requests:
+      cpu: "2"
+      memory: "1Gi"
+    limits:
+      cpu: "4"
+      memory: "2Gi"
+
+  env:
+    - name: NODE_ROLE
+      value: "coordinator"
+    - name: RAY_HEAD_ADDR
+      value: "CLUSTER_A_NODE_IP:6379"
+    - name: COORDINATOR_SPU_ADDR
+      value: "0.0.0.0:9396"
+
+persistence:
+  enabled: true
+  path: "/data/mobile-mpc"
+  storageClass: ""

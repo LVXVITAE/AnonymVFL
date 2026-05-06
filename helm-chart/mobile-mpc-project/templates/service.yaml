@@ -16,13 +16,6 @@ spec:
     {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.spu }}
     nodePort: {{ .Values.company.service.nodePorts.spu }}
     {{- end }}
-  - port: {{ .Values.company.service.ports.coordinator }}
-    targetPort: coordinator
-    protocol: TCP
-    name: coordinator
-    {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.coordinator }}
-    nodePort: {{ .Values.company.service.nodePorts.coordinator }}
-    {{- end }}
   - port: {{ .Values.company.service.ports.ray }}
     targetPort: ray
     protocol: TCP
@@ -87,9 +80,9 @@ spec:
     app.kubernetes.io/component: partner
 {{- end }}
 
-{{- if .Values.company.enabled }}
+{{- if .Values.coordinator.enabled }}
 ---
-# Coordinator Service (指向 Company Pod，因为 Company 兼任 Coordinator)
+# Coordinator Service (独立 Coordinator Pod)
 apiVersion: v1
 kind: Service
 metadata:
@@ -98,15 +91,18 @@ metadata:
     {{- include "mobile-mpc.labels" . | nindent 4 }}
     app.kubernetes.io/component: coordinator
 spec:
-  type: ClusterIP
+  type: {{ .Values.coordinator.service.type }}
   ports:
-  - port: {{ .Values.company.service.ports.coordinator }}
-    targetPort: coordinator
+  - port: {{ .Values.coordinator.service.ports.spu }}
+    targetPort: spu
     protocol: TCP
     name: coordinator
+    {{- if and (eq .Values.coordinator.service.type "NodePort") .Values.coordinator.service.nodePorts.spu }}
+    nodePort: {{ .Values.coordinator.service.nodePorts.spu }}
+    {{- end }}
   selector:
     {{- include "mobile-mpc.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: company
+    app.kubernetes.io/component: coordinator
 {{- end }}
 
 {{- if .Values.webui.enabled }}

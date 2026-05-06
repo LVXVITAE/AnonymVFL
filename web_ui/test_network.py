@@ -42,6 +42,11 @@ def load_config() -> dict:
             return yaml.safe_load(f)
     return {}
 
+
+def print_test_result(label: str, ok: bool):
+    """统一输出测试结果"""
+    print(f"  {label}: {'✅ 连通' if ok else '❌ 不通'}")
+
 def test_network_connectivity():
     """测试网络连通性"""
     print("=" * 60)
@@ -64,16 +69,16 @@ def test_network_connectivity():
         
         print(f"\n📡 测试Company节点 ({company_ip})")
         print("-" * 40)
-        
+
         # 测试Ray端口
         ray_status = test_port_connectivity(company_ip, ray_port)
-        print(f"  Ray端口 {ray_port}: {'✅ 连通' if ray_status else '❌ 不通'}")
+        print_test_result(f"Ray端口 {ray_port}", ray_status)
         if not ray_status:
             all_tests_passed = False
-        
+
         # 测试SPU端口
         spu_status = test_port_connectivity(company_ip, spu_port)
-        print(f"  SPU端口 {spu_port}: {'✅ 连通' if spu_status else '❌ 不通'}")
+        print_test_result(f"SPU端口 {spu_port}", spu_status)
         if not spu_status:
             all_tests_passed = False
     
@@ -85,10 +90,10 @@ def test_network_connectivity():
         
         print(f"\n📡 测试Partner节点 ({partner_ip})")
         print("-" * 40)
-        
+
         # 测试SPU端口
         partner_spu_status = test_port_connectivity(partner_ip, partner_spu_port)
-        print(f"  SPU端口 {partner_spu_port}: {'✅ 连通' if partner_spu_status else '❌ 不通'}")
+        print_test_result(f"SPU端口 {partner_spu_port}", partner_spu_status)
         if not partner_spu_status:
             all_tests_passed = False
     
@@ -100,12 +105,29 @@ def test_network_connectivity():
         
         print(f"\n📡 测试Coordinator节点 ({coordinator_ip})")
         print("-" * 40)
-        
+
         # 测试SPU端口
         coordinator_spu_status = test_port_connectivity(coordinator_ip, coordinator_spu_port)
-        print(f"  SPU端口 {coordinator_spu_port}: {'✅ 连通' if coordinator_spu_status else '❌ 不通'}")
+        print_test_result(f"SPU端口 {coordinator_spu_port}", coordinator_spu_status)
         if not coordinator_spu_status:
             all_tests_passed = False
+
+    # 检查三机是否真的分离
+    node_ips = []
+    for node_name in ('company', 'partner', 'coordinator'):
+        node_cfg = config.get(node_name, {})
+        node_ip = node_cfg.get('ip')
+        if node_ip:
+            node_ips.append(node_ip)
+
+    print("\n🔐 测试三机隔离配置")
+    print("-" * 40)
+    unique_ips = {ip for ip in node_ips if ip}
+    is_three_machine = len(unique_ips) == 3
+    print(f"  节点 IP 集合: {sorted(unique_ips)}")
+    print(f"  三机分离: {'✅ 是' if is_three_machine else '❌ 否'}")
+    if not is_three_machine:
+        all_tests_passed = False
     
     # 测试Web UI服务
     web_ui_config = config.get('web_ui', {})
@@ -115,7 +137,7 @@ def test_network_connectivity():
     print("-" * 40)
     
     web_ui_status = test_port_connectivity('localhost', web_ui_port)
-    print(f"  Web服务端口 {web_ui_port}: {'✅ 连通' if web_ui_status else '❌ 不通'}")
+    print_test_result(f"本地 Web 服务端口 {web_ui_port}", web_ui_status)
     if not web_ui_status:
         all_tests_passed = False
     
@@ -124,6 +146,27 @@ def test_network_connectivity():
         http_status = test_http_endpoint(f'http://localhost:{web_ui_port}/api/status')
         print(f"  HTTP API: {'✅ 正常' if http_status else '❌ 异常'}")
         if not http_status:
+            all_tests_passed = False
+
+    # 可选：测试远端 WebUI 地址
+    remote_webui = config.get('remote_webui', {})
+    company_webui = remote_webui.get('company_url')
+    partner_webui = remote_webui.get('partner_url')
+
+    if company_webui or partner_webui:
+        print("\n🌐 测试远端 WebUI 端点")
+        print("-" * 40)
+
+    if company_webui:
+        company_webui_ok = test_http_endpoint(company_webui)
+        print(f"  Company WebUI {company_webui}: {'✅ 正常' if company_webui_ok else '❌ 异常'}")
+        if not company_webui_ok:
+            all_tests_passed = False
+
+    if partner_webui:
+        partner_webui_ok = test_http_endpoint(partner_webui)
+        print(f"  Partner WebUI {partner_webui}: {'✅ 正常' if partner_webui_ok else '❌ 异常'}")
+        if not partner_webui_ok:
             all_tests_passed = False
     
     print("\n" + "=" * 60)
