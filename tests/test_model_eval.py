@@ -492,16 +492,118 @@ class TestCaliforniaHousingSSXGBoost:
         d = california_housing_data
         sc = d["split_col"]
 
-        Q1, _, bl1 = quantize_buckets(d["train_X"][:, :sc], k=10)
-        Q2, _, bl2 = quantize_buckets(d["train_X"][:, sc:], k=10)
+        train_X_full = d["train_X"].astype(np.float32)
+        train_y_full = d["train_y"].astype(np.float32)
+
+        # 模拟 PSI 前各方数据：
+        # Company: 交集 + Company 独有；Partner: 交集 + Partner 独有
+        n_company = train_X_full.shape[0]
+        n_intersection = int(n_company * 0.8)
+
+        company_keys = np.array([f"id_{i}" for i in range(n_company)], dtype=object)
+        partner_keys = np.array(
+            [f"id_{i}" if i < n_intersection else f"partner_only_{i}" for i in range(n_company)],
+            dtype=object,
+        )
+
+        company_X_full = train_X_full[:, :sc]
+        partner_X_full = np.vstack(
+            [
+                train_X_full[:n_intersection, sc:],
+                d["test_X"][: n_company - n_intersection, sc:].astype(np.float32),
+            ]
+        )
+
+        # 各方分别在“各自全量数据集”上分桶
+        Q1, _, bl1 = quantize_buckets(company_X_full, k=10)
+        Q2, _, bl2 = quantize_buckets(partner_X_full, k=10)
+
+        # 仅在交集样本上恢复桶，用于训练
+        intersection_keys = company_keys[:n_intersection]
+        partner_idx_map = {k: i for i, k in enumerate(partner_keys)}
+        company_inter_idx = np.arange(n_intersection)
+        partner_inter_idx = np.array([partner_idx_map[k] for k in intersection_keys], dtype=np.int64)
+
+        buckets = recover_buckets(np.hstack((bl1[company_inter_idx], bl2[partner_inter_idx])))
+        FedQuantiles = load(
+            {company: sf.to(company, Q1), partner: sf.to(partner, Q2)},
+            partition_way=PartitionWay.HORIZONTAL,
+        )
+
+        train_X_inter = np.hstack((company_X_full[company_inter_idx], partner_X_full[partner_inter_idx]))
+        train_y_inter = train_y_full[company_inter_idx]
+
+        train_X = sf.to(company, train_X_inter).to(spu)
+        train_y = sf.to(company, train_y_inter)
+
+        test_X = load(
+            {company: sf.to(company, d["test_X"][:, :sc].astype(np.float32)),
+             partner: sf.to(partner, d["test_X"][:, sc:].astype(np.float32))},
+            partition_way=PartitionWay.VERTICAL,
+        )
+        test_y = sf.to(company, d["test_y"].astype(np.float32))
+
+        model = SSXGBoost(
+            devices, n_estimators=7, lambda_=0.1, max_depth=3, mission='Regression'
+        )
+        model.fit(
+            train_X, train_y, buckets, FedQuantiles,
+            X_test=test_X, y_test=test_y,
+        )
+
+        y_pred = sf.reveal(model.predict(test_X, company))
+        metrics = _compute_regression_metrics(d["test_y"], y_pred)
+        metrics["方法"] = "SSXGBoost"
+        metrics["数据集"] = "California Housing"
+
+        csv_path = os.path.join(eval_results_dir, "ssxgboost_housing_metrics.csv")
+        pd.DataFrame([metrics]).to_csv(csv_path, index=False)
+
+    @pytest.mark.slow
+    def test_ssxgboost_housing_intersection_quantize(
+        self, devices, california_housing_data, eval_results_dir
+    ):
+        """SSXGBoost 回归: California Housing（仅在交集样本上 quantize bucket）"""
+        from XGBoost import SSXGBoost, quantize_buckets, recover_buckets
+
+        company = devices["company"]
+        partner = devices["partner"]
+        spu = devices["spu"]
+        d = california_housing_data
+        sc = d["split_col"]
+
+        train_X_full = d["train_X"].astype(np.float32)
+        train_y_full = d["train_y"].astype(np.float32)
+        n_train = train_X_full.shape[0]
+
+        # 构造 80% 重叠的样本 key，只使用交集部分进行分桶和训练
+        n_intersection = int(n_train * 0.8)
+        company_keys = np.array([f"id_{i}" for i in range(n_train)], dtype=object)
+        partner_keys = np.array(
+            [f"id_{i}" if i < n_intersection else f"partner_only_{i}" for i in range(n_train)],
+            dtype=object,
+        )
+
+        intersection_keys = company_keys[:n_intersection]
+        partner_idx_map = {k: i for i, k in enumerate(partner_keys)}
+        company_inter_idx = np.arange(n_intersection)
+        partner_inter_idx = np.array([partner_idx_map[k] for k in intersection_keys], dtype=np.int64)
+
+        train_X_company_inter = train_X_full[company_inter_idx, :sc]
+        train_X_partner_inter = train_X_full[partner_inter_idx, sc:]
+        train_X_inter = np.hstack((train_X_company_inter, train_X_partner_inter)).astype(np.float32)
+        train_y_inter = train_y_full[company_inter_idx]
+
+        Q1, _, bl1 = quantize_buckets(train_X_company_inter, k=10)
+        Q2, _, bl2 = quantize_buckets(train_X_partner_inter, k=10)
         buckets = recover_buckets(np.hstack((bl1, bl2)))
         FedQuantiles = load(
             {company: sf.to(company, Q1), partner: sf.to(partner, Q2)},
             partition_way=PartitionWay.HORIZONTAL,
         )
 
-        train_X = sf.to(company, d["train_X"].astype(np.float32)).to(spu)
-        train_y = sf.to(company, d["train_y"].astype(np.float32))
+        train_X = sf.to(company, train_X_inter).to(spu)
+        train_y = sf.to(company, train_y_inter)
 
         test_X = load(
             {company: sf.to(company, d["test_X"][:, :sc].astype(np.float32)),
@@ -520,11 +622,17 @@ class TestCaliforniaHousingSSXGBoost:
 
         y_pred = sf.reveal(model.predict(test_X, company))
         metrics = _compute_regression_metrics(d["test_y"], y_pred)
-        metrics["方法"] = "SSXGBoost"
+        metrics["训练样本数"] = int(n_intersection)
+        metrics["方法"] = "SSXGBoost-仅交集quantize"
         metrics["数据集"] = "California Housing"
 
-        csv_path = os.path.join(eval_results_dir, "ssxgboost_housing_metrics.csv")
+        csv_path = os.path.join(
+            eval_results_dir, "ssxgboost_housing_intersection_quantize_metrics.csv"
+        )
         pd.DataFrame([metrics]).to_csv(csv_path, index=False)
+
+        assert metrics["MSE"] >= 0
+        assert np.isfinite(metrics["R2"])
 
 
 class TestAdultSSXGBoost:
@@ -612,7 +720,7 @@ class TestSklearnBaselines:
         d = breast_cancer_data
         xgb = XGBClassifier(
             n_estimators=3, max_depth=3, learning_rate=1, reg_lambda=0.1,
-            eval_metric="logloss", random_state=42,
+            eval_metric="logloss", random_state=42, tree_method="hist",
         )
         xgb.fit(d["train_X"], d["train_y"].ravel())
         y_pred = xgb.predict(d["test_X"])
@@ -635,7 +743,7 @@ class TestSklearnBaselines:
         d = california_housing_data
         xgb = XGBRegressor(
             n_estimators=5, max_depth=3, learning_rate=1, reg_lambda=0.1,
-            random_state=42,
+            random_state=42, tree_method="hist",
         )
         xgb.fit(d["train_X"], d["train_y"].ravel())
         y_pred = xgb.predict(d["test_X"])
