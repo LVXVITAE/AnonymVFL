@@ -23,15 +23,6 @@ spec:
     {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.ray }}
     nodePort: {{ .Values.company.service.nodePorts.ray }}
     {{- end }}
-  {{- if .Values.company.service.ports.webui }}
-  - port: {{ .Values.company.service.ports.webui }}
-    targetPort: webui
-    protocol: TCP
-    name: webui
-    {{- if and (eq .Values.company.service.type "NodePort") .Values.company.service.nodePorts.webui }}
-    nodePort: {{ .Values.company.service.nodePorts.webui }}
-    {{- end }}
-  {{- end }}
   selector:
     {{- include "mobile-mpc.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: company
@@ -60,21 +51,6 @@ spec:
     {{- if and (eq .Values.partner.service.type "NodePort") .Values.partner.service.nodePorts.spu }}
     nodePort: {{ .Values.partner.service.nodePorts.spu }}
     {{- end }}
-  # Ray 端口 - 用于跨集群 Ray Worker 通信
-  - port: {{ .Values.partner.service.ports.rayClient }}
-    targetPort: ray-client
-    protocol: TCP
-    name: ray-client
-    {{- if and (eq .Values.partner.service.type "NodePort") .Values.partner.service.nodePorts.rayClient }}
-    nodePort: {{ .Values.partner.service.nodePorts.rayClient }}
-    {{- end }}
-  - port: {{ .Values.partner.service.ports.rayDashboard }}
-    targetPort: ray-dashboard
-    protocol: TCP
-    name: ray-dashboard
-    {{- if and (eq .Values.partner.service.type "NodePort") .Values.partner.service.nodePorts.rayDashboard }}
-    nodePort: {{ .Values.partner.service.nodePorts.rayDashboard }}
-    {{- end }}
   selector:
     {{- include "mobile-mpc.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: partner
@@ -88,15 +64,14 @@ kind: Service
 metadata:
   name: {{ include "mobile-mpc.fullname" . }}-coordinator-svc
   labels:
-    {{- include "mobile-mpc.labels" . | nindent 4 }}
-    app.kubernetes.io/component: coordinator
+    {{- include "mobile-mpc.coordinator.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.coordinator.service.type }}
   ports:
   - port: {{ .Values.coordinator.service.ports.spu }}
     targetPort: spu
     protocol: TCP
-    name: coordinator
+    name: spu
     {{- if and (eq .Values.coordinator.service.type "NodePort") .Values.coordinator.service.nodePorts.spu }}
     nodePort: {{ .Values.coordinator.service.nodePorts.spu }}
     {{- end }}
