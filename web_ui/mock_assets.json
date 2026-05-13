@@ -1,0 +1,42 @@
+{
+  "orders": {
+    "ORD_LOCAL_DEMO": [
+      {
+        "id": 1,
+        "orderCode": "ORD_LOCAL_DEMO",
+        "metano": "META_COMPANY_TRAIN",
+        "metaname": "本方训练数据集",
+        "assetSide": "LOCAL",
+        "createdAt": "2026-03-05T09:00:00+08:00",
+        "updatedAt": "2026-03-05T09:00:00+08:00"
+      },
+      {
+        "id": 2,
+        "orderCode": "ORD_LOCAL_DEMO",
+        "metano": "META_COMPANY_TEST",
+        "metaname": "本方验证数据集",
+        "assetSide": "LOCAL",
+        "createdAt": "2026-03-05T09:00:00+08:00",
+        "updatedAt": "2026-03-05T09:00:00+08:00"
+      },
+      {
+        "id": 3,
+        "orderCode": "ORD_LOCAL_DEMO",
+        "metano": "META_PARTNER_TRAIN",
+        "metaname": "合作方训练数据集",
+        "assetSide": "PARTNER",
+        "createdAt": "2026-03-05T09:00:00+08:00",
+        "updatedAt": "2026-03-05T09:00:00+08:00"
+      },
+      {
+        "id": 4,
+        "orderCode": "ORD_LOCAL_DEMO",
+        "metano": "META_PARTNER_TEST",
+        "metaname": "合作方验证数据集",
+        "assetSide": "PARTNER",
+        "createdAt": "2026-03-05T09:00:00+08:00",
+        "updatedAt": "2026-03-05T09:00:00+08:00"
+      }
+    ]
+  }
+}

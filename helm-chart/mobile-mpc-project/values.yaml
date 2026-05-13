@@ -218,6 +218,15 @@ webui:
   env: []
   # - name: API_URL
   #   value: "http://api.example.com"
+
+  # 轻量化底座数据接入配置
+  dataAccess:
+    dataMode: "local"       # local: 读取本地 mock CSV；nfs: 读取 NFS_MOUNT_PATH/{metano}.csv
+    baseInvokeUrl: ""       # 例如 http://base-gateway:8080/janus/invoke/v1
+    nfsMountPath: "/data/nfs"
+    localAssetDir: "/app/web_ui/mock_assets"
+    mockAssetsFile: "/app/web_ui/mock_assets.json"
+    orderCode: "ORD_LOCAL_DEMO"
   
   # 健康检查探针（端口会自动使用 service.targetPort）
   livenessProbe:
@@ -321,4 +330,3 @@ imagePullSecrets: []
 # 名称覆盖
 nameOverride: ""
 fullnameOverride: ""
-

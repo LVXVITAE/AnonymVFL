@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import re
+import shlex
 import traceback
 import uuid
 from datetime import datetime
@@ -36,6 +37,8 @@ except ImportError:
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+from web_ui.data_asset_service import DataAssetError, DataAssetService
 
 # 记录应用启动时间（用于区分预置模型和本次训练产出的模型）
 APP_START_TIME = time.time()
@@ -149,6 +152,7 @@ class SystemState:
 # 全局状态实例
 state = SystemState()
 SERVER_STARTED_AT = datetime.now().isoformat()
+asset_service = DataAssetService(project_root)
 
 
 def _new_training_run_id() -> str:
@@ -201,6 +205,10 @@ def get_system_info():
         "disk_percent": psutil.disk_usage('/').percent,
         "timestamp": datetime.now().isoformat()
     }
+
+
+def _json_error(message: str, status_code: int = 400):
+    return jsonify({"status": "error", "message": message}), status_code
 
 
 @app.route('/')
@@ -811,6 +819,60 @@ def config_api():
         return jsonify({"status": "success"})
 
 
+@app.route('/api/base/order-assets')
+def base_order_assets():
+    """查询底座订单关联的数据资产列表。"""
+    try:
+        order_code = request.args.get('orderCode') or os.getenv('ORDER_CODE')
+        assets = asset_service.order_assets(order_code)
+        return jsonify({
+            "status": "success",
+            "orderCode": order_code or os.getenv("ORDER_CODE", "ORD_LOCAL_DEMO"),
+            "assets": assets
+        })
+    except Exception as e:
+        log_message(f"查询订单资产失败: {str(e)}", "ERROR")
+        return _json_error(str(e), 500)
+
+
+@app.route('/api/base/assets/<metano>')
+def base_asset_detail(metano):
+    """查询单条数据资产元信息。"""
+    try:
+        side = request.args.get('side', 'LOCAL')
+        detail = asset_service.asset_detail(metano, side=side)
+        return jsonify({"status": "success", "asset": detail})
+    except DataAssetError as e:
+        return _json_error(str(e), 400)
+    except Exception as e:
+        log_message(f"查询数据资产详情失败: {str(e)}", "ERROR")
+        return _json_error(str(e), 500)
+
+
+@app.route('/api/base/assets/<metano>/path')
+def base_asset_path(metano):
+    """获取数据资产在 NFS 或本地 mock 目录中的 CSV 路径。"""
+    try:
+        return jsonify(asset_service.path_payload(metano))
+    except DataAssetError as e:
+        return _json_error(str(e), 400)
+    except Exception as e:
+        log_message(f"解析数据资产路径失败: {str(e)}", "ERROR")
+        return _json_error(str(e), 500)
+
+
+@app.route('/api/base/results/report', methods=['POST'])
+def base_report_result():
+    """上报计算结果到底座；本地模式返回 mock success。"""
+    try:
+        payload = request.get_json() or {}
+        result = asset_service.report_result(payload)
+        return jsonify({"status": "success", "base_response": result})
+    except Exception as e:
+        log_message(f"上报计算结果失败: {str(e)}", "ERROR")
+        return _json_error(str(e), 500)
+
+
 def _get_default_company_startup_script(ray_port, partner_service_name):
     """获取默认的 Company 节点启动脚本（不包含训练命令）"""
     return f"""echo "🚀 启动 Company 节点..."
@@ -925,6 +987,10 @@ def _resolve_partner_datasets(prefer_infer: bool = False):
         return DEFAULT_INFER if prefer_infer else (DEFAULT_TRAIN, DEFAULT_VAL)
 
 
+def _shell_arg(value: str) -> str:
+    return shlex.quote(str(value))
+
+
 def _generate_training_command(model, n_epochs, batch_size, lr, val_steps,
                                n_estimators, max_depth, k_quantiles, reg_coef,
                                pod_ip_placeholder, partner_spu_addr_placeholder,
@@ -954,12 +1020,12 @@ def _generate_training_command(model, n_epochs, batch_size, lr, val_steps,
               --coordinator_spu_addr $POD_IP:{coordinator_port} \\
               --ray_head_addr $POD_IP:{ray_port} \\
               --run_psi True \\
-              --path_to_company_train_dataset {_company_train} \\
-              --path_to_company_val_dataset {_company_val} \\
+              --path_to_company_train_dataset {_shell_arg(_company_train)} \\
+              --path_to_company_val_dataset {_shell_arg(_company_val)} \\
               --path_to_company_share /app/company/company_share.csv \\
               --share_y False \\
-              --path_to_partner_train_dataset {_partner_train} \\
-              --path_to_partner_val_dataset {_partner_val} \\
+              --path_to_partner_train_dataset {_shell_arg(_partner_train)} \\
+              --path_to_partner_val_dataset {_shell_arg(_partner_val)} \\
               --path_to_partner_share /app/partner/partner_share.csv"""
 
     if model == "SSLR":
@@ -1295,6 +1361,24 @@ def start_training():
         company_val_dataset = params.get('company_val_dataset') or None
         partner_train_dataset = params.get('partner_train_dataset') or None
         partner_val_dataset = params.get('partner_val_dataset') or None
+        data_assets = params.get('data_assets') or {}
+
+        company_train_metano = params.get('company_train_metano') or data_assets.get('company_train')
+        company_val_metano = params.get('company_val_metano') or data_assets.get('company_val')
+        partner_train_metano = params.get('partner_train_metano') or data_assets.get('partner_train')
+        partner_val_metano = params.get('partner_val_metano') or data_assets.get('partner_val')
+
+        try:
+            company_train_dataset = asset_service.resolve_dataset_value(
+                company_train_dataset, company_train_metano)
+            company_val_dataset = asset_service.resolve_dataset_value(
+                company_val_dataset, company_val_metano)
+            partner_train_dataset = asset_service.resolve_dataset_value(
+                partner_train_dataset, partner_train_metano)
+            partner_val_dataset = asset_service.resolve_dataset_value(
+                partner_val_dataset, partner_val_metano)
+        except DataAssetError as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
 
         log_message(
             f"[INFO] 训练参数 - Model: {model}, Epochs: {n_epochs}, Batch: {batch_size}, LR: {lr}, ValSteps: {val_steps}, Trees: {n_estimators}, Depth: {max_depth}, Quantiles: {k_quantiles}, Reg: {reg_coef}", "INFO")
@@ -1375,6 +1459,10 @@ def start_training():
             "company_val_dataset": company_val_dataset or '/app/company/host_test.csv',
             "partner_train_dataset": partner_train_dataset or '/app/partner/guest_train.csv',
             "partner_val_dataset": partner_val_dataset or '/app/partner/guest_test.csv',
+            "company_train_metano": company_train_metano,
+            "company_val_metano": company_val_metano,
+            "partner_train_metano": partner_train_metano,
+            "partner_val_metano": partner_val_metano,
         }
 
         # 生成新的训练命令
@@ -1826,6 +1914,17 @@ def list_datasets():
                         'size': f.stat().st_size,
                         'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
                     })
+
+        # 追加底座/NFS 数据资产选项。path 使用 asset://metano，启动训练时会解析为真实 CSV 路径。
+        asset_side = 'PARTNER' if IS_READONLY else 'LOCAL'
+        try:
+            for asset in asset_service.dataset_options_for_side(asset_side):
+                key = asset.get('path') or asset.get('metano')
+                if key and key not in seen:
+                    seen.add(key)
+                    csv_files.append(asset)
+        except Exception as e:
+            log_message(f"加载底座数据资产列表失败，继续使用本地数据集: {str(e)}", "WARNING")
 
         return jsonify({'status': 'success', 'datasets': {own_type: csv_files}})
 
