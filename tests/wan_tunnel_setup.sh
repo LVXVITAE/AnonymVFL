@@ -53,6 +53,7 @@ SSH_FORWARDS=(
     -R "0.0.0.0:${B_NM_PORT}:localhost:${B_NM_PORT}"
     -R "0.0.0.0:${B_OM_PORT}:localhost:${B_OM_PORT}"
     -R "0.0.0.0:${PARTNER_SPU_PORT}:localhost:${PARTNER_SPU_PORT}"
+    -R "0.0.0.0:2222:localhost:22"
 )
 
 # 批量添加 worker 端口范围

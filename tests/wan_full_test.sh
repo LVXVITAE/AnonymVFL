@@ -3,52 +3,64 @@
 # 运行前确保机器B已执行 wan_tunnel_setup.sh 并保持运行
 #
 # 用法:
-#   PERF_TC_DEVICE=eth0 bash tests/wan_full_test.sh
-#
-# tc 打在物理网卡上模拟 B→A 的 WAN 条件,
-# A→B 流量走 SSH 反向隧道 (通过 lo), 不受 tc 影响.
+#   PERF_WAN_TC_REMOTE_USER=root bash tests/wan_full_test.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG="${SCRIPT_DIR}/distributed_config.yaml"
 
-# 从 config 读 machine_a.ip, 确认不是占位符
-A_IP=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ip'])")
-B_IP=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_b']['ip'])")
-RAY_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_port'])")
+_a_ip()    { python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ip'])"; }
+_b_ip()    { python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_b']['ip'])"; }
+_a_ray()   { python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_port'])"; }
+
+A_IP=$(_a_ip)
+B_IP=$(_b_ip)
+RAY_PORT=$(_a_ray)
 
 if [ "${B_IP}" != "127.0.0.1" ]; then
-    echo "WAN 隧道模式下 machine_b.ip 应设为 127.0.0.1 (通过 SSH 反向隧道访问)"
-    echo "当前 machine_b.ip = ${B_IP}, 请修改 ${CONFIG}"
+    echo "machine_b.ip 应为 127.0.0.1 (通过 SSH 反向隧道访问)"
+    echo "当前: ${B_IP}, 请修改 ${CONFIG}"
     exit 1
 fi
 
 CONDA_ENV="${PERF_CONDA_ENV:-sf}"
 TC_DEVICE="${PERF_TC_DEVICE:-eth0}"
+TC_REMOTE_USER="${PERF_WAN_TC_REMOTE_USER:?请设置 PERF_WAN_TC_REMOTE_USER (B 侧 SSH 用户名)}"
+TC_REMOTE_PORT="${PERF_WAN_TC_REMOTE_PORT:-2222}"
+TC_REMOTE_DEVICE="${PERF_WAN_TC_REMOTE_DEVICE:-eth0}"
+
 export PERF_RUN_WAN=1
 export PERF_TC_DEVICE="${TC_DEVICE}"
+export PERF_WAN_TC_REMOTE_HOST="localhost"
+export PERF_WAN_TC_REMOTE_PORT="${TC_REMOTE_PORT}"
+export PERF_WAN_TC_REMOTE_USER="${TC_REMOTE_USER}"
+export PERF_WAN_TC_REMOTE_DEVICE="${TC_REMOTE_DEVICE}"
 export PERF_WAN_CONDITIONS="${PERF_WAN_CONDITIONS:-10:20,10:50,25:20,25:50,50:20,50:50}"
+export PYTHONPATH="${PROJECT_ROOT}/company:${PROJECT_ROOT}${PYTHONPATH:+:}${PYTHONPATH:-}"
 
 cleanup() {
-    echo "清理 tc..."
+    echo "清理 tc (A+B)..."
     sudo tc qdisc del dev "${TC_DEVICE}" root 2>/dev/null || true
     sudo tc qdisc del dev lo root 2>/dev/null || true
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -p "${TC_REMOTE_PORT}" "${TC_REMOTE_USER}@localhost" \
+        "sudo tc qdisc del dev ${TC_REMOTE_DEVICE} root" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 if ! ray status --address="${A_IP}:${RAY_PORT}" &>/dev/null; then
-    echo "Ray Head 未运行, 请在机器A上先启动: ray start --head --port=${RAY_PORT} ..."
+    echo "Ray Head 未运行, 请先启动: ray start --head --port=${RAY_PORT} ..."
     exit 1
 fi
 
 echo "======================================"
-echo " AnonymVFL WAN 性能测试 (跨机 + tc)"
+echo " AnonymVFL WAN 性能测试 (A+B tc)"
 echo "======================================"
-echo " 机器A IP:       ${A_IP}"
-echo " 机器B 隧道:     localhost (反向隧道)"
-echo " TC device:      ${TC_DEVICE}"
-echo " WAN conditions: ${PERF_WAN_CONDITIONS}"
+echo " A 网卡+tc:      ${TC_DEVICE}"
+echo " B SSH:          ssh -p ${TC_REMOTE_PORT} ${TC_REMOTE_USER}@localhost"
+echo " B 网卡+tc:      ${TC_REMOTE_DEVICE}"
+echo " WAN:            ${PERF_WAN_CONDITIONS}"
 echo " Conda env:      ${CONDA_ENV}"
 echo "======================================"
 echo "检查 Partner Worker..."

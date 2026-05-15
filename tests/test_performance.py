@@ -33,6 +33,10 @@ import secretflow as sf
 from secretflow.data.ndarray import load, PartitionWay
 
 _TC_DEVICE = os.getenv("PERF_TC_DEVICE", "lo")
+_TC_REMOTE_HOST = os.getenv("PERF_WAN_TC_REMOTE_HOST", "")
+_TC_REMOTE_PORT = os.getenv("PERF_WAN_TC_REMOTE_PORT", "2222")
+_TC_REMOTE_USER = os.getenv("PERF_WAN_TC_REMOTE_USER", "")
+_TC_REMOTE_DEVICE = os.getenv("PERF_WAN_TC_REMOTE_DEVICE", "eth0")
 
 
 def _get_net_bytes():
@@ -141,6 +145,22 @@ def _apply_tc(bandwidth_mb_s: float, latency_ms: int, device: str = None):
     subprocess.run(["sudo", "bash", "-c", cmd], check=True, timeout=10)
 
 
+def _apply_tc_remote(bandwidth_mb_s: float, latency_ms: int):
+    if not _TC_REMOTE_HOST:
+        return
+    _clear_tc_remote()
+    limit = max(100000, latency_ms * 10)
+    cmd = (
+        f"sudo tc qdisc add dev {_TC_REMOTE_DEVICE} root handle 1:0 netem delay {latency_ms}ms limit {limit} && "
+        f"sudo tc qdisc add dev {_TC_REMOTE_DEVICE} parent 1:0 handle 2:0 tbf rate {bandwidth_mb_s}mbit burst 32kbit latency 400ms"
+    )
+    subprocess.run(
+        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+         "-p", _TC_REMOTE_PORT, f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}", cmd],
+        check=True, timeout=10,
+    )
+
+
 def _clear_tc(device: str = None):
     if device is None:
         device = _TC_DEVICE
@@ -151,8 +171,21 @@ def _clear_tc(device: str = None):
     )
 
 
+def _clear_tc_remote():
+    if not _TC_REMOTE_HOST:
+        return
+    subprocess.run(
+        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+         "-p", _TC_REMOTE_PORT, f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}",
+         f"sudo tc qdisc del dev {_TC_REMOTE_DEVICE} root"],
+        capture_output=True,
+        timeout=10,
+    )
+
+
 def _require_wan_condition(bandwidth_mb_s: float, latency_ms: int):
     _apply_tc(bandwidth_mb_s, latency_ms)
+    _apply_tc_remote(bandwidth_mb_s, latency_ms)
 
 
 def _append_perf_record(perf_results_dir: str, filename: str, record: dict):
@@ -861,6 +894,7 @@ class TestWANNetworkImpact:
     def _tc_cleanup(self):
         yield
         _clear_tc()
+        _clear_tc_remote()
 
     @staticmethod
     def _condition_record(condition: tuple[float, int]) -> dict:
