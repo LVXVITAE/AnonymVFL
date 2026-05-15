@@ -53,6 +53,15 @@ echo " Mem Threshold: ${RAY_memory_usage_threshold}"
 echo " Mem Monitor(ms): ${RAY_memory_monitor_refresh_ms}"
 echo "======================================"
 
+if [ "${PARTNER_IP}" = "${RAY_HEAD_IP}" ]; then
+    echo "检测到 Machine A 与 Machine B 使用同一 IP (${PARTNER_IP})。"
+    echo "这是单机退化模式: partner 资源应由 Ray head 节点直接声明。"
+    echo "请先运行: bash tests/start_ray_head.sh"
+    echo "如果 head 已启动且 ray status 中包含 partner 资源, 无需再启动 Partner Worker。"
+    ray status || true
+    exit 0
+fi
+
 # 1. 停止可能残留的 Ray 进程
 ray stop --force 2>/dev/null || true
 

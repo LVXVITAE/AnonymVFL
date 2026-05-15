@@ -17,6 +17,7 @@ fi
 
 # 从 YAML 中解析配置 (兼容无 yq 的环境)
 A_IP=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ip'])")
+B_IP=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_b']['ip'])")
 RAY_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_port'])")
 OBJ_MGR_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a'].get('object_manager_port', 0))")
 NODE_MGR_PORT=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a'].get('node_manager_port', 0))")
@@ -26,6 +27,12 @@ NUM_CPUS=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c
 OBJ_STORE=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['ray']['object_store_memory'])")
 COMPANY_RES=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_resources']['company'])")
 COORD_RES=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_a']['ray_resources']['coordinator'])")
+PARTNER_RES=$(python3 -c "import yaml; c=yaml.safe_load(open('${CONFIG}')); print(c['machine_b']['ray_resources']['partner'])")
+
+RESOURCES="{\"company\": ${COMPANY_RES}, \"coordinator\": ${COORD_RES}}"
+if [ "${A_IP}" = "${B_IP}" ]; then
+    RESOURCES="{\"company\": ${COMPANY_RES}, \"coordinator\": ${COORD_RES}, \"partner\": ${PARTNER_RES}}"
+fi
 
 echo "======================================"
 echo " AnonymVFL Ray Head 启动脚本"
@@ -43,7 +50,10 @@ echo " Node Mgr Port:    ${NODE_MGR_PORT}"
 echo " Worker Ports:     ${MIN_WORKER_PORT}-${MAX_WORKER_PORT}"
 echo " CPUs:             ${NUM_CPUS}"
 echo " Object Store:     ${OBJ_STORE}"
-echo " Resources:        company=${COMPANY_RES}, coordinator=${COORD_RES}"
+echo " Resources:        ${RESOURCES}"
+if [ "${A_IP}" = "${B_IP}" ]; then
+    echo " Mode:             single-machine degraded (partner runs on head)"
+fi
 echo " Mem Threshold:    ${RAY_memory_usage_threshold}"
 echo " Mem Monitor(ms):  ${RAY_memory_monitor_refresh_ms}"
 echo "======================================"
@@ -73,7 +83,7 @@ ray start --head \
     --node-ip-address="${A_IP}" \
     --port="${RAY_PORT}" \
     --num-cpus="${NUM_CPUS}" \
-    --resources="{\"company\": ${COMPANY_RES}, \"coordinator\": ${COORD_RES}}" \
+    --resources="${RESOURCES}" \
     --object-store-memory="${OBJ_STORE}" \
     ${PORT_ARGS}
 
@@ -101,5 +111,9 @@ ray status
 
 echo ""
 echo "📍 Ray 集群地址: ${A_IP}:${RAY_PORT}"
-echo "💡 在 Machine B 上运行: bash tests/start_partner_worker.sh ${A_IP} ${RAY_PORT}"
+if [ "${A_IP}" = "${B_IP}" ]; then
+    echo "💡 当前是单机退化模式, 不需要再运行 start_partner_worker.sh"
+else
+    echo "💡 在 Machine B 上运行: bash tests/start_partner_worker.sh ${A_IP} ${RAY_PORT}"
+fi
 echo "💡 停止集群: ray stop"

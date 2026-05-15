@@ -1,9 +1,9 @@
 from common import  out_dom
+import gc
 import numpy as np
 from hashlib import sha512
 from rbcl import crypto_core_ristretto255_from_hash, crypto_core_ristretto255_scalar_random, crypto_scalarmult_ristretto255
 import pandas as pd
-from time import time
 import secretflow as sf
 from secretflow.device import PYUObject, HEUObject
 from secretflow import HEU, PYU
@@ -17,8 +17,11 @@ def unpack_data(data: tuple):
 
 def repermute_data(U_0, U_1, U_2):
     """对keys、私有特征和公开特征进行随机排列"""
-    pem = np.random.permutation(len(U_0)).tolist()
-    U_0 = [U_0[i] for i in pem]
+    pem = np.random.permutation(len(U_0))
+    if isinstance(U_0, np.ndarray):
+        U_0 = U_0[pem]
+    else:
+        U_0 = [U_0[i] for i in pem]
     U_1 = U_1[pem]
     if U_2 is not None:
         U_2 = U_2[pem]
@@ -27,21 +30,45 @@ def repermute_data(U_0, U_1, U_2):
 
 def hash_mul_keys(keys, k):
     """对keys进行哈希并用标量k乘以Ristretto255点"""
-    keys = [crypto_core_ristretto255_from_hash(sha512(key.encode()).digest()) for key in keys]
-    return [crypto_scalarmult_ristretto255(k, key) for key in keys]
+    hash_to_point = crypto_core_ristretto255_from_hash
+    scalar_mul = crypto_scalarmult_ristretto255
+    hashed_keys = (hash_to_point(sha512(key.encode()).digest()) for key in keys)
+    return [scalar_mul(k, key) for key in hashed_keys]
 
 
 def scalar_mul_points(points, k):
     """用标量k乘以一组Ristretto255点"""
-    return [crypto_scalarmult_ristretto255(k, p) for p in points]
+    scalar_mul = crypto_scalarmult_ristretto255
+    return [scalar_mul(k, p) for p in points]
 
 
 def intersection_indices(E_c_0, E_p_0):
     """比较二次乘方后的哈希值求交集"""
-    company_hash = pd.DataFrame([(ec0, i) for i, ec0 in enumerate(E_c_0)], columns=['hash', 'i'])
-    partner_hash = pd.DataFrame([(ep0, j) for j, ep0 in enumerate(E_p_0)], columns=['hash', 'j'])
-    intersection = pd.merge(company_hash, partner_hash, how='inner', on='hash')
-    return intersection
+    partner_index = pd.Index(E_p_0)
+    j_indices = partner_index.get_indexer(E_c_0)
+    matched = j_indices >= 0
+    return pd.DataFrame({
+        'i': np.flatnonzero(matched),
+        'j': j_indices[matched],
+    })
+
+
+def random_mask(shape):
+    """生成 PSI 加法分享 mask，保持 float32 避免 hstack 时提升到 float64."""
+    return np.random.randint(-out_dom // 2, out_dom // 2, size=shape).astype(np.float32)
+
+
+def concat_shares(left, right):
+    """拼接 share，避免 np.hstack 的 dtype 提升和额外中间对象."""
+    left = np.asarray(left, dtype=np.float32)
+    right = np.asarray(right, dtype=np.float32)
+    out = np.empty(
+        (left.shape[0], left.shape[1] + right.shape[1]),
+        dtype=np.float32,
+    )
+    out[:, :left.shape[1]] = left
+    out[:, left.shape[1]:] = right
+    return out
 
 
 def repermute_with_pem(E_c_0, E_c_2, r_c, n):
@@ -118,28 +145,38 @@ class PSICompany(PSIWorker):
 
         intersection = self.device(intersection_indices)(E_c_0, E_p_0)
         intersection = sf.reveal(intersection)
+        company_indices = intersection['i'].tolist()
+        partner_indices = intersection['j'].tolist()
+        del intersection, E_c_0, E_p_0, U_p_0
+        gc.collect()
         # 生成随机数。理论上随机数的范围应是Paillier的明文空间，但实际上小一些的值也不影响结果的正确性
         # 后续可研究如何获取Paillier的明文空间的值
-        r_p = self.device(np.random.randint)(-out_dom // 2, out_dom // 2, size=(len(intersection), partner_data_shape[1]))
+        r_p = self.device(random_mask)((len(company_indices), partner_data_shape[1]))
         r_p_enc = r_p.to(self.partner_heu).encrypt()
 
         print("Computing masked partner cipher")
         L = (
-            intersection['i'].tolist(), 
+            company_indices,
             # homo sub
-            E_p_1[intersection['j'].tolist()] - r_p_enc,
+            E_p_1[partner_indices] - r_p_enc,
         )
+        del E_p_1, r_p_enc
+        gc.collect()
         E_p_2 = sf.reveal(E_p_2)
-        E_p_2 = E_p_2[intersection['j'].tolist()] if E_p_2 is not None else None
+        E_p_2 = E_p_2[partner_indices] if E_p_2 is not None else None
         print("Computing company shares")
-        R_cI = self.device(np.hstack)((
-            E_c_1[intersection['i'].tolist()].to(self.device),
+        R_cI = self.device(concat_shares)(
+            E_c_1[company_indices].to(self.device),
             r_p
-        ))
+        )
+        del E_c_1, r_p
+        gc.collect()
         E_c_2 = sf.reveal(E_c_2)
-        E_c_2 = E_c_2[intersection['i'].tolist()] if E_c_2 is not None else None
+        E_c_2 = E_c_2[company_indices] if E_c_2 is not None else None
 
         bucket_labels = np.hstack((E_c_2,E_p_2)) if E_p_2 is not None and E_c_2 is not None else None
+        del E_c_2, E_p_2, company_indices, partner_indices
+        gc.collect()
         return (L, R_cI, bucket_labels)
 
 
@@ -159,20 +196,28 @@ class PSIPartner(PSIWorker):
 
         # 生成随机数。理论上随机数的范围应是Paillier的明文空间，但实际上小一些的值也不影响结果的正确性
         # 后续可研究如何获取Paillier的明文空间的值
-        self.r_c = self.device(np.random.randint)(- out_dom // 2, out_dom // 2, size=company_data_shape)
+        self.r_c = self.device(random_mask)(company_data_shape)
 
         print("Computing masked company cipher")
         # 计算Company二次乘方后的哈希值
         E_c_0 = self.device(scalar_mul_points)(U_c_0, self.k)
+        del U_c_0
+        gc.collect()
         r_c_enc = self.r_c.to(self.company_heu).encrypt()
         # homo sub
         E_c_1 = U_c_1 - r_c_enc
         E_c_2 = U_c_2
+        del U_c_1, r_c_enc
+        gc.collect()
       
         E_c_0, E_c_2, self.r_c, pem = self.device(repermute_with_pem, num_returns=4)(E_c_0, E_c_2, self.r_c, company_data_shape[0])
 
         E_c_1 = E_c_1[pem]
-        return (E_c_0.to(self.company), E_c_1, E_c_2.to(self.company)), (U_p_0.to(self.company), U_p_1.to(self.partner_heu).encrypt(), U_p_2.to(self.company)), self.data_shape
+        E_c = (E_c_0.to(self.company), E_c_1, E_c_2.to(self.company))
+        U_p = (U_p_0.to(self.company), U_p_1.to(self.partner_heu).encrypt(), U_p_2.to(self.company))
+        del E_c_0, E_c_1, E_c_2, U_p_0, U_p_1, U_p_2, pem
+        gc.collect()
+        return E_c, U_p, self.data_shape
 
     def output_shares(self, L):
         """
@@ -185,10 +230,12 @@ class PSIPartner(PSIWorker):
 
         print("Computing partner shares")
         r_c = self.device(np.ndarray.__getitem__)(self.r_c,L[0])
-        R_pI = self.device(np.hstack)((
+        R_pI = self.device(concat_shares)(
             r_c,
             L[1].to(self.device)
-        ))
+        )
+        del r_c, L
+        gc.collect()
         return R_pI
 
 def private_set_intersection(company_data : PYUObject, partner_data : PYUObject, heu_devices : tuple[HEU, HEU]) -> tuple[PYUObject, PYUObject,np.ndarray | None]:
@@ -208,6 +255,12 @@ def private_set_intersection(company_data : PYUObject, partner_data : PYUObject,
     psi_partner = PSIPartner(partner_data, pyu_devices, heu_devices)
     U_c, company_data_shape = psi_company.exchange()
     E_c, U_p, partner_data_shape = psi_partner.exchange(U_c, company_data_shape)
+    del U_c
+    gc.collect()
     L, R_cI, buckets_labels = psi_company.compute_intersection(E_c, U_p, partner_data_shape)
+    del E_c, U_p
+    gc.collect()
     R_pI = psi_partner.output_shares(L)
+    del L, psi_company, psi_partner
+    gc.collect()
     return R_cI, R_pI, buckets_labels

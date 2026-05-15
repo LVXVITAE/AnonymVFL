@@ -252,6 +252,8 @@ class MPCInitializer:
         }
         heu_config = sf.utils.testing.heu_config(
             sk_keeper=sk_keeper, evaluators=evaluators)
+        heu_key_size = int(os.getenv('HEU_KEY_SIZE', '2048'))
+        heu_config['he_parameters']['key_pair']['generate']['bit_size'] = heu_key_size
         heu_config['encoding'] = encoding
         return sf.HEU(
             heu_config, self.spu.cluster_def['runtime_config']['field'])

@@ -153,6 +153,33 @@ def plot_inference_latency(records: list[dict], png_path: str,
     plt.close(fig)
 
 
+def plot_wan_network_impact(records: list[dict], title: str, png_path: str,
+                            y_key: str):
+    """Line chart for fixed-workload WAN tests: bandwidth vs metric, grouped by latency."""
+    df = pd.DataFrame(records).sort_values(["延迟(ms)", "带宽限制(Mb/s)"])
+    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3"]
+
+    fig, ax = plt.subplots()
+    for idx, (latency, grp) in enumerate(df.groupby("延迟(ms)", sort=True)):
+        ax.plot(
+            grp["带宽限制(Mb/s)"],
+            grp[y_key],
+            marker="o",
+            linewidth=2,
+            color=colors[idx % len(colors)],
+            label=f"{int(latency)} ms",
+        )
+    ax.set_xlabel("带宽限制 (Mb/s)")
+    ax.set_ylabel(y_key)
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(title="延迟")
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(png_path), exist_ok=True)
+    fig.savefig(png_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_model_comparison(results: list[dict], dataset_name: str, png_path: str):
     """Grouped bar chart: compare methods on Accuracy/Precision/Recall/F1/AUC."""
     df = pd.DataFrame(results)
