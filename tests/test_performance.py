@@ -34,9 +34,10 @@ from secretflow.data.ndarray import load, PartitionWay
 
 _TC_DEVICE = os.getenv("PERF_TC_DEVICE", "lo")
 _TC_REMOTE_HOST = os.getenv("PERF_WAN_TC_REMOTE_HOST", "")
-_TC_REMOTE_PORT = os.getenv("PERF_WAN_TC_REMOTE_PORT", "2222")
+_TC_REMOTE_PORT = os.getenv("PERF_WAN_TC_REMOTE_PORT", "22")
 _TC_REMOTE_USER = os.getenv("PERF_WAN_TC_REMOTE_USER", "")
 _TC_REMOTE_DEVICE = os.getenv("PERF_WAN_TC_REMOTE_DEVICE", "eth0")
+_TC_REMOTE_KEY = os.getenv("PERF_WAN_TC_REMOTE_KEY", "")
 
 
 def _get_net_bytes():
@@ -101,6 +102,29 @@ CONFIG_PATH = os.path.join(TESTS_DIR, "distributed_config.yaml")
 
 
 def _load_distributed_config():
+    if os.getenv("PERF_USE_ENV_CONFIG", "0") == "1":
+        return {
+            "machine_a": {
+                "ip": os.environ["PERF_A_IP"],
+                "ray_port": int(os.environ["PERF_A_RAY_PORT"]),
+                "object_manager_port": int(os.environ["PERF_A_OBJECT_MANAGER_PORT"]),
+                "node_manager_port": int(os.environ["PERF_A_NODE_MANAGER_PORT"]),
+                "min_worker_port": int(os.environ["PERF_A_MIN_WORKER_PORT"]),
+                "max_worker_port": int(os.environ["PERF_A_MAX_WORKER_PORT"]),
+                "company_spu_port": int(os.environ["PERF_A_COMPANY_SPU_PORT"]),
+                "coordinator_spu_port": int(os.environ["PERF_A_COORDINATOR_SPU_PORT"]),
+                "ray_resources": {"company": 10, "coordinator": 10},
+            },
+            "machine_b": {
+                "ip": os.environ["PERF_B_IP"],
+                "partner_spu_port": int(os.environ["PERF_B_PARTNER_SPU_PORT"]),
+                "ray_resources": {"partner": 10},
+            },
+            "ray": {
+                "num_cpus": int(os.environ["PERF_RAY_NUM_CPUS"]),
+                "object_store_memory": int(os.environ["PERF_RAY_OBJECT_STORE_MEMORY"]),
+            },
+        }
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
@@ -154,11 +178,14 @@ def _apply_tc_remote(bandwidth_mb_s: float, latency_ms: int):
         f"sudo tc qdisc add dev {_TC_REMOTE_DEVICE} root handle 1:0 netem delay {latency_ms}ms limit {limit} && "
         f"sudo tc qdisc add dev {_TC_REMOTE_DEVICE} parent 1:0 handle 2:0 tbf rate {bandwidth_mb_s}mbit burst 32kbit latency 400ms"
     )
-    subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-         "-p", _TC_REMOTE_PORT, f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}", cmd],
-        check=True, timeout=10,
-    )
+    ssh_args = [
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        "-p", _TC_REMOTE_PORT,
+    ]
+    if _TC_REMOTE_KEY:
+        ssh_args += ["-i", _TC_REMOTE_KEY]
+    ssh_args += [f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}", cmd]
+    subprocess.run(ssh_args, check=True, timeout=10)
 
 
 def _clear_tc(device: str = None):
@@ -174,13 +201,15 @@ def _clear_tc(device: str = None):
 def _clear_tc_remote():
     if not _TC_REMOTE_HOST:
         return
-    subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-         "-p", _TC_REMOTE_PORT, f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}",
-         f"sudo tc qdisc del dev {_TC_REMOTE_DEVICE} root"],
-        capture_output=True,
-        timeout=10,
-    )
+    ssh_args = [
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        "-p", _TC_REMOTE_PORT,
+    ]
+    if _TC_REMOTE_KEY:
+        ssh_args += ["-i", _TC_REMOTE_KEY]
+    ssh_args += [f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}",
+                 f"sudo tc qdisc del dev {_TC_REMOTE_DEVICE} root"]
+    subprocess.run(ssh_args, capture_output=True, timeout=10)
 
 
 def _require_wan_condition(bandwidth_mb_s: float, latency_ms: int):
