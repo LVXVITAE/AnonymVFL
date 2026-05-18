@@ -8,7 +8,7 @@
 # 如果只有一台机器做退化测试, 可以把两个 IP 都设为 127.0.0.1
 
 machine_a:
-  ip: "127.0.0.1"               # ← 单机退化测试
+  ip: "192.168.122.197"               # ← 单机退化测试
   ray_port: 20001                  # Ray head 端口
   object_manager_port: 20002       # 对象存储管理端口 (固定, 跨机传输必须可达)
   node_manager_port: 20003         # 节点管理端口 (固定)
@@ -21,7 +21,7 @@ machine_a:
     coordinator: 100
 
 machine_b:
-  ip: "127.0.0.1"               # ← 单机退化测试
+  ip: "192.168.122.185"               # ← 单机退化测试
   partner_spu_port: 9395           # Partner SPU 端口
   ray_resources:
     partner: 100

@@ -78,8 +78,5 @@ ray start \
     --min-worker-port=54003 \
     --max-worker-port=54103
 
-echo "[2/2] Partner Worker 已加入集群, 保持运行中..."
-echo "按 Ctrl+C 退出"
-
-# 3. 保持进程运行 (等待任务分配)
-tail -f /dev/null
+echo "[2/2] Partner Worker 已加入集群（守护进程在后台运行）。"
+echo "使用 ray stop 可停止 Worker。"
