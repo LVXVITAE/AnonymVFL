@@ -1,7 +1,2 @@
 网络环境,带宽限制(Mb/s),延迟(ms),测试,模型,样本数量,特征数量,n_estimators,max_depth,分位点数量k,总时间(s),发送通信量(MB),接收通信量(MB),总通信量(MB)
-WAN,10.0,20,SSXGBoost-WAN-NetworkImpact,SSXGBoost,10000,18,3,3,20,235.82,6.9499,7.1267,14.0766
-WAN,10.0,50,SSXGBoost-WAN-NetworkImpact,SSXGBoost,10000,18,3,3,20,236.73,6.8804,6.8856,13.766
-WAN,25.0,20,SSXGBoost-WAN-NetworkImpact,SSXGBoost,10000,18,3,3,20,241.32,7.5733,7.6089,15.1823
-WAN,25.0,50,SSXGBoost-WAN-NetworkImpact,SSXGBoost,10000,18,3,3,20,250.6,20.5734,18.1478,38.7212
-WAN,50.0,20,SSXGBoost-WAN-NetworkImpact,SSXGBoost,10000,18,3,3,20,253.73,31.6784,26.6619,58.3404
-WAN,50.0,50,SSXGBoost-WAN-NetworkImpact,SSXGBoost,10000,18,3,3,20,245.62,7.8317,41.2939,49.1256
+WAN,10.0,40,SSXGBoost-WAN-NetworkImpact,SSXGBoost,10000,18,3,3,20,225.69,2.6302,1.3812,4.0114

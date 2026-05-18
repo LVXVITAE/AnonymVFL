@@ -8,7 +8,7 @@
 # 如果只有一台机器做退化测试, 可以把两个 IP 都设为 127.0.0.1
 
 machine_a:
-  ip: "192.168.1.23"               # ← 替换为本机局域网 IP (如 192.168.1.100)
+  ip: "127.0.0.1"               # ← 单机退化测试
   ray_port: 20001                  # Ray head 端口
   object_manager_port: 20002       # 对象存储管理端口 (固定, 跨机传输必须可达)
   node_manager_port: 20003         # 节点管理端口 (固定)
@@ -17,15 +17,15 @@ machine_a:
   company_spu_port: 9394           # Company SPU 端口
   coordinator_spu_port: 9396       # Coordinator SPU 端口
   ray_resources:
-    company: 10
-    coordinator: 10
+    company: 100
+    coordinator: 100
 
 machine_b:
-  ip: "192.168.1.23"               # ← 替换为远程 Partner 机器 IP (如 192.168.1.101)
+  ip: "127.0.0.1"               # ← 单机退化测试
   partner_spu_port: 9395           # Partner SPU 端口
   ray_resources:
-    partner: 10
+    partner: 100
 
 ray:
-  num_cpus: 16                      # 每个节点的 CPU 数量
-  object_store_memory: 2000000000  # 2 GB object store
+  num_cpus: 16                      # 每个节点的 CPU 数量 (超分配，SPU/HEU actors需要大量CPU slot)
+  object_store_memory: 100000000   # 100MB object store (内存紧张)

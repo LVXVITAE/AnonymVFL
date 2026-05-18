@@ -91,7 +91,7 @@ def _run_with_comm_measure(task):
 
 pytestmark = pytest.mark.performance
 STRESS_SAMPLES = int(os.getenv("PERF_STRESS_SAMPLES", "300000"))
-WAN_CONDITIONS = os.getenv("PERF_WAN_CONDITIONS", "10:20,10:50,25:20,25:50,50:20,50:50")
+WAN_CONDITIONS = os.getenv("PERF_WAN_CONDITIONS", "10:0,10:20,10:40,30:0,30:20,30:40,50:0,50:20,50:40")
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -213,6 +213,13 @@ def _clear_tc_remote():
 
 
 def _require_wan_condition(bandwidth_mb_s: float, latency_ms: int):
+    if not _TC_REMOTE_HOST and _TC_DEVICE == "lo":
+        import warnings
+        warnings.warn(
+            f"Single-machine mode: skipping tc shaping ({bandwidth_mb_s}Mb/s, {latency_ms}ms) "
+            f"on {_TC_DEVICE} to avoid breaking Ray SPU communication."
+        )
+        return
     _apply_tc(bandwidth_mb_s, latency_ms)
     _apply_tc_remote(bandwidth_mb_s, latency_ms)
 
@@ -288,9 +295,10 @@ def distributed_env():
     cluster_def = _build_cluster_def(cfg)
     ray_addr = f"{cfg['machine_a']['ip']}:{cfg['machine_a']['ray_port']}"
 
-    # Ensure Ray workers can import company/ modules.
+    # Ensure Ray workers can import company/ and root modules.
     company_dir = os.path.join(os.path.dirname(TESTS_DIR), "company")
-    runtime_env = {"env_vars": {"PYTHONPATH": company_dir}}
+    project_root = os.path.dirname(TESTS_DIR)
+    runtime_env = {"env_vars": {"PYTHONPATH": company_dir + os.pathsep + project_root}}
 
     mpc = MPCInitializer(
         mode='multi_distributed',
@@ -903,7 +911,7 @@ class TestWANNetworkImpact:
     - SSLR: 10,000 样本, 18 特征, batch_size=128, n_epochs=3
     - SSXGBoost: 10,000 样本, 18 特征, k=20, n_estimators=3, max_depth=3
 
-    PERF_WAN_CONDITIONS 使用 "带宽MB/s:延迟ms" 列表, 例如:
+    PERF_WAN_CONDITIONS 使用 "带宽Mb/s:延迟ms" 列表, 例如:
     PERF_WAN_CONDITIONS=10:20,25:50,50:100
     """
 
