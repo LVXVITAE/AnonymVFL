@@ -38,15 +38,15 @@ ENV JAX_PLATFORMS=cpu \
 
 # 暴露端口
 # 9394: Company SPU 端口
-# 9396: Coordinator SPU 端口
 # 8080: Web UI 端口
 # 6379: Ray Head 端口
-EXPOSE 8080 9394 9396 6379
+EXPOSE 8080 9394 6379
 
 # 默认命令
+# COORDINATOR_SPU_ADDR 应通过环境变量或命令行参数指定独立的 Coordinator 地址
 CMD ["python", "company/truerun.py", "--mode", "multi_distributed", \
     "--company_spu_addr", "0.0.0.0:9394", \
     "--partner_spu_addr", "partner:9395", \
-    "--coordinator_spu_addr", "0.0.0.0:9396", \
+    "--coordinator_spu_addr", "coordinator:9396", \
     "--ray_head_addr", "0.0.0.0:6379"]
 

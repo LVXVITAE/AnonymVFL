@@ -9,6 +9,7 @@ venv/
 .venv/
 .env
 .env.*
+*.pyc
 
 # Logs
 *.log
@@ -52,3 +53,4 @@ Thumbs.db
 
 # Optional: uncomment if you don't want to track sample datasets
 # company/Datasets/
+
