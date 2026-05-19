@@ -140,6 +140,7 @@ def _run_with_comm_measure(task):
 
 pytestmark = pytest.mark.performance
 STRESS_SAMPLES = int(os.getenv("PERF_STRESS_SAMPLES", "1000000"))
+STRESS_FEATURES = int(os.getenv("PERF_STRESS_FEATURES", "18"))
 WAN_CONDITIONS = os.getenv("PERF_WAN_CONDITIONS", "10:0,10:20,10:40,30:0,30:20,30:40,50:0,50:20,50:40")
 
 # ---------------------------------------------------------------------------
@@ -1241,8 +1242,10 @@ class TestStress:
     """
 
     N_SAMPLES = STRESS_SAMPLES
-    N_FEATURES = 18
-    SPLIT_COL = 9
+    N_FEATURES = STRESS_FEATURES
+    if N_FEATURES < 2:
+        raise ValueError("PERF_STRESS_FEATURES must be >= 2")
+    SPLIT_COL = N_FEATURES // 2
 
     @staticmethod
     def _append_record(perf_results_dir, filename, record):

@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # =========================== 配置区 ===========================
-B_PUBLIC_IP="192.168.122.185"                  # 机器B 的 IP (若等于 A_IP 则自动进入单机退化模式)
+B_PUBLIC_IP="172.29.56.45"                  # 机器B 的 IP (若等于 A_IP 则自动进入单机退化模式)
 B_SSH_USER="ubuntu"                            # 机器B 的 SSH 用户名
 B_SSH_PASSWORD="ubuntu"                        # SSH 密码 (使用 sshpass)
 
@@ -25,7 +25,7 @@ CONDA_ENV="sf"                                 # conda 环境名
 
 RAY_PORT=20001                                 # Ray Head 端口
 RAY_OBJECT_STORE_MEMORY=4000000000             # object store 内存 (4 GB)
-RAY_NUM_CPUS=16                                # 每节点 CPU 数
+RAY_NUM_CPUS=20                                # 每节点 CPU 数
 
 A_COMPANY_SPU_PORT=9394
 A_COORDINATOR_SPU_PORT=9396
@@ -40,8 +40,9 @@ B_OBJECT_MANAGER_PORT=54002
 B_MIN_WORKER_PORT=54003
 B_MAX_WORKER_PORT=54103
 
-STRESS_SAMPLES=1000000                          # 压力测试样本量
-STRESS_TEST_FILTER="all"                         # 选择压力测试项: all / psi / sslr / xgboost
+STRESS_SAMPLES=10000000                              # 压力测试样本量
+STRESS_FEATURES=10                                # 压力测试特征数 (建议 >= 2)
+STRESS_TEST_FILTER="psi"                         # 选择压力测试项: all / psi / sslr / xgboost
 
 # 根据 STRESS_TEST_FILTER 构建 pytest 目标
 case "${STRESS_TEST_FILTER}" in
@@ -111,6 +112,7 @@ export PERF_B_PARTNER_SPU_PORT="${B_PARTNER_SPU_PORT}"
 export PERF_RAY_NUM_CPUS="${RAY_NUM_CPUS}"
 export PERF_RAY_OBJECT_STORE_MEMORY="${RAY_OBJECT_STORE_MEMORY}"
 export PERF_STRESS_SAMPLES="${STRESS_SAMPLES}"
+export PERF_STRESS_FEATURES="${STRESS_FEATURES}"
 
 # ------------------------------------------------------------------
 # 清理 (A 本地 + B 远程)
@@ -206,6 +208,7 @@ else
     echo " B:                  ${B_PUBLIC_IP}"
 fi
 echo " 样本量:             ${STRESS_SAMPLES}"
+echo " 特征数:             ${STRESS_FEATURES}"
 echo " 测试项:             ${STRESS_TEST_FILTER}"
 echo " Conda env:          ${CONDA_ENV}"
 echo "======================================"
