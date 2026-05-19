@@ -214,7 +214,7 @@ class MPCInitializer:
     根据secretflow的文档，仅修改此处的初始化方式而几乎无需改动其他源码即可实现分布式部署
     """
 
-    def __init__(self, mode='single_sim', ray_head_addr="", cluster_def={}, runtime_env=None):
+    def __init__(self, mode='single_sim', ray_head_addr="", cluster_def={}, runtime_env=None, link_desc=None):
         self.mode = mode
         self._company_heu = None
         self._partner_heu = None
@@ -234,13 +234,14 @@ class MPCInitializer:
                     )
             self.config = cluster_def
         if mode == 'multi_distributed':
-            # 分布式模式，每个节点只初始化自己需要的角色
             sf.init(['company', 'partner', 'coordinator'],
                     address=ray_head_addr,
                     **init_kwargs,
                     )
             self.config = cluster_def
         spu_kwargs = {}
+        if link_desc is not None:
+            spu_kwargs['link_desc'] = link_desc
         self.spu = sf.SPU(self.config, **spu_kwargs)
         self.company, self.partner, self.coordinator = sf.PYU(
             'company'), sf.PYU('partner'), sf.PYU('coordinator')

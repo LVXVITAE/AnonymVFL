@@ -7,7 +7,12 @@ import os
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
+
+_CJK_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+if os.path.exists(_CJK_FONT_PATH):
+    fm.fontManager.addfont(_CJK_FONT_PATH)
 
 plt.rcParams.update({
     "font.size": 12,
@@ -15,10 +20,9 @@ plt.rcParams.update({
     "axes.labelsize": 12,
     "figure.figsize": (10, 6),
 })
-# 设置中文显示（解决中文方框乱码问题）
-plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'SimHei', 'DejaVu Sans']
-# 解决负号显示问题
-plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
+if os.path.exists(_CJK_FONT_PATH):
+    plt.rcParams["font.sans-serif"] = ["Noto Sans CJK JP"] + plt.rcParams.get("font.sans-serif", [])
+plt.rcParams["axes.unicode_minus"] = False
 
 def save_performance_table(records: list[dict], csv_path: str):
     """Save a list of dicts as a CSV file."""
@@ -79,9 +83,6 @@ def plot_batch_size_impact(records: list[dict], png_path: str,
         ax1.plot(grp["批次大小"], grp["总训练时间(s)"],
                  marker="o", color=color, linewidth=2,
                  label=f"训练时间 样本数={int(n_samples)}")
-        for x, y in zip(grp["批次大小"], grp["总训练时间(s)"]):
-            ax1.annotate(f"{y:.1f}", (x, y), textcoords="offset points",
-                         xytext=(0, 8), ha="center", fontsize=9)
         if has_comm:
             ax2.plot(grp["批次大小"], grp[comm_key],
                      marker="s", color=comm_colors[idx % len(comm_colors)],
@@ -154,26 +155,94 @@ def plot_inference_latency(records: list[dict], png_path: str,
 
 
 def plot_wan_network_impact(records: list[dict], title: str, png_path: str,
-                            y_key: str):
-    """Line chart for fixed-workload WAN tests: bandwidth vs metric, grouped by latency."""
-    df = pd.DataFrame(records).sort_values(["延迟(ms)", "带宽限制(Mb/s)"])
-    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3"]
+                            y_key: str, comm_key: str = "总通信量(MB)"):
+    """Side-by-side subplots: left = bandwidth impact (fixed latency=0),
+    right = latency impact (fixed bandwidth=baseline).
 
-    fig, ax = plt.subplots()
-    for idx, (latency, grp) in enumerate(df.groupby("延迟(ms)", sort=True)):
-        ax.plot(
-            grp["带宽限制(Mb/s)"],
-            grp[y_key],
-            marker="o",
-            linewidth=2,
-            color=colors[idx % len(colors)],
-            label=f"{int(latency)} ms",
-        )
-    ax.set_xlabel("带宽限制 (Mb/s)")
-    ax.set_ylabel(y_key)
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    ax.legend(title="延迟")
+    Each subplot has a secondary y-axis for communication volume (comm_key).
+
+    Expects WAN_CONDITIONS format "bw:lat" where:
+      - Bandwidth series has latency=0 with varying bandwidth.
+      - Latency series has a fixed high bandwidth with varying latency.
+    """
+    df = pd.DataFrame(records).sort_values(["延迟(ms)", "带宽限制(Mb/s)"])
+
+    bw_df = df[df["延迟(ms)"] == 0].sort_values("带宽限制(Mb/s)")
+    lat_df = df[df["带宽限制(Mb/s)"] >= df["带宽限制(Mb/s)"].max()].sort_values("延迟(ms)")
+
+    color_time = "#4C72B0"
+    color_comm = "#DD8452"
+
+    has_comm = comm_key in df.columns
+
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(14, 6))
+
+    all_y = pd.concat([bw_df[y_key], lat_df[y_key]])
+    y_min, y_max = all_y.min(), all_y.max()
+    y_pad = (y_max - y_min) * 0.1 if y_max > y_min else 1
+    y_lo = max(0, y_min - y_pad)
+    y_hi = y_max + y_pad
+
+    if has_comm:
+        all_comm = pd.concat([bw_df[comm_key], lat_df[comm_key]])
+        c_min, c_max = all_comm.min(), all_comm.max()
+        c_pad = (c_max - c_min) * 0.1 if c_max > c_min else 1
+        c_lo = max(0, c_min - c_pad)
+        c_hi = c_max + c_pad
+
+    # --- Left: bandwidth impact ---
+    if len(bw_df) > 0:
+        ax_left.plot(bw_df["带宽限制(Mb/s)"], bw_df[y_key],
+                     marker="o", linewidth=2, color=color_time, label=y_key)
+        if has_comm:
+            ax_left2 = ax_left.twinx()
+            ax_left2.plot(bw_df["带宽限制(Mb/s)"], bw_df[comm_key],
+                          marker="s", linewidth=2, linestyle="--",
+                          color=color_comm, label=comm_key)
+            ax_left2.set_ylabel(comm_key, color=color_comm)
+            ax_left2.set_ylim(c_lo, c_hi)
+            ax_left2.tick_params(axis="y", labelcolor=color_comm)
+    ax_left.set_xlabel("带宽 (Mb/s)")
+    ax_left.set_ylabel(y_key, color=color_time)
+    ax_left.tick_params(axis="y", labelcolor=color_time)
+    ax_left.set_ylim(y_lo, y_hi)
+    ax_left.set_title("带宽影响 (延迟=0)")
+    ax_left.grid(True, alpha=0.3)
+
+    if len(bw_df) > 0 and has_comm:
+        lines1, labels1 = ax_left.get_legend_handles_labels()
+        lines2, labels2 = ax_left2.get_legend_handles_labels()
+        ax_left.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=9)
+    elif len(bw_df) > 0:
+        ax_left.legend(loc="upper right", fontsize=9)
+
+    # --- Right: latency impact ---
+    if len(lat_df) > 0:
+        ax_right.plot(lat_df["延迟(ms)"], lat_df[y_key],
+                      marker="o", linewidth=2, color=color_time, label=y_key)
+        if has_comm:
+            ax_right2 = ax_right.twinx()
+            ax_right2.plot(lat_df["延迟(ms)"], lat_df[comm_key],
+                           marker="s", linewidth=2, linestyle="--",
+                           color=color_comm, label=comm_key)
+            ax_right2.set_ylabel(comm_key, color=color_comm)
+            ax_right2.set_ylim(c_lo, c_hi)
+            ax_right2.tick_params(axis="y", labelcolor=color_comm)
+    ax_right.set_xlabel("延迟 (ms)")
+    ax_right.set_ylabel(y_key, color=color_time)
+    ax_right.tick_params(axis="y", labelcolor=color_time)
+    ax_right.set_ylim(y_lo, y_hi)
+    ax_right.set_title(f"延迟影响 (带宽={int(lat_df['带宽限制(Mb/s)'].iloc[0]) if len(lat_df) > 0 else '-'}Mb/s)")
+    ax_right.grid(True, alpha=0.3)
+
+    if len(lat_df) > 0 and has_comm:
+        lines1, labels1 = ax_right.get_legend_handles_labels()
+        lines2, labels2 = ax_right2.get_legend_handles_labels()
+        ax_right.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=9)
+    elif len(lat_df) > 0:
+        ax_right.legend(loc="upper left", fontsize=9)
+
+    fig.suptitle(title, fontsize=14, y=1.02)
     fig.tight_layout()
     os.makedirs(os.path.dirname(png_path), exist_ok=True)
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
@@ -199,9 +268,6 @@ def plot_model_comparison(results: list[dict], dataset_name: str, png_path: str)
         bars = ax.bar([xi + offset for xi in x], vals, width,
                       label=method, color=colors[i % len(colors)],
                       edgecolor="black", linewidth=0.5)
-        for bar, val in zip(bars, vals):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.003,
-                    f"{val:.3f}", ha="center", va="bottom", fontsize=8)
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(available)

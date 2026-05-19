@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# ===== WAN 性能测试一键脚本 (A=LAN, B=公网) =====
-# 在机器A上运行, 自动控制机器B加入 Ray 集群。
+# ===== 压力测试一键脚本 =====
+# 在机器A上运行, 自动控制机器B加入 Ray 集群, 然后执行 100 万样本压力测试。
 #
 # 支持两种模式:
-#   双机模式: B_PUBLIC_IP != A_IP, 通过 SSH 控制机器B加入集群, 两端分别施加 tc
-#   单机退化模式: B_PUBLIC_IP == A_IP (自动检测), 本机同时运行 Head + Worker,
-#                tc 仅施加在本机网卡 (流量经内核协议栈往返)
+#   双机模式: B_PUBLIC_IP != A_IP, 通过 SSH 控制机器B加入集群
+#   单机退化模式: B_PUBLIC_IP == A_IP (自动检测), 在本机同时运行 Head + Worker
 #
 # 用法:
-#   bash tests/wan_setup.sh                          # 自动检测双机/单机
-#   B_PUBLIC_IP=自动检测到的A_IP bash ...             # 强制单机退化
+#   bash tests/stress_setup.sh                      # 自动检测双机/单机
+#   B_PUBLIC_IP=自动检测到的A_IP bash ...           # 强制单机退化
 #
 # 前置 (双机): 机器B 上已安装 conda env sf, A 能通过 sshpass+密码 SSH 到 B
 # 前置 (单机): 本机有足够内存/CPU 即可
@@ -23,8 +22,6 @@ B_SSH_USER="ubuntu"                            # 机器B 的 SSH 用户名
 B_SSH_PASSWORD="ubuntu"                        # SSH 密码 (使用 sshpass)
 
 CONDA_ENV="sf"                                 # conda 环境名
-A_TC_DEVICE=""                                 # A 侧受 tc 限制的网卡 (留空则自动检测)
-B_TC_DEVICE=""                                 # B 侧受 tc 限制的网卡 (留空则自动检测; 单机模式下自动同 A)
 
 RAY_PORT=20001                                 # Ray Head 端口
 RAY_OBJECT_STORE_MEMORY=4000000000             # object store 内存 (4 GB)
@@ -43,10 +40,16 @@ B_OBJECT_MANAGER_PORT=54002
 B_MIN_WORKER_PORT=54003
 B_MAX_WORKER_PORT=54103
 
-# 测试网络条件: "带宽MB/s:延迟ms" 逗号分隔
-WAN_CONDITIONS="10:0,20:0,30:0,40:0,50:0,1000:10,1000:20,1000:30,1000:40,1000:50"
+STRESS_SAMPLES=1000000                          # 压力测试样本量
+STRESS_TEST_FILTER="all"                         # 选择压力测试项: all / psi / sslr / xgboost
 
-PYTEST_TARGET="tests/test_performance.py::TestWANNetworkImpact"
+# 根据 STRESS_TEST_FILTER 构建 pytest 目标
+case "${STRESS_TEST_FILTER}" in
+    psi)     PYTEST_TARGET="tests/test_performance.py::TestStress::test_psi_alignment_stress" ;;
+    sslr)    PYTEST_TARGET="tests/test_performance.py::TestStress::test_sslr_training_stress" ;;
+    xgboost) PYTEST_TARGET="tests/test_performance.py::TestStress::test_xgboost_training_stress" ;;
+    *)       PYTEST_TARGET="tests/test_performance.py::TestStress" ;;
+esac
 # ==============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -67,11 +70,6 @@ fi
 A_NIC=$(echo "${_route_line}" | sed -n 's/.*dev \([^ ]*\).*/\1/p' | head -1)
 echo "检测到 A 的局域网 IP: ${A_IP} (网卡: ${A_NIC:-未知})"
 
-# 若未手动指定 tc 网卡, 则使用自动检测的网卡
-if [ -z "${A_TC_DEVICE}" ]; then
-    A_TC_DEVICE="${A_NIC}"
-fi
-
 # ------------------------------------------------------------------
 # 自动检测单机退化模式: B_IP == A_IP
 # ------------------------------------------------------------------
@@ -83,14 +81,6 @@ else
     SINGLE_MACHINE=0
     B_EFFECTIVE_IP="${B_PUBLIC_IP}"
     echo "*** 双机模式: A=${A_IP} B=${B_PUBLIC_IP} ***"
-fi
-
-# 单机退化模式下 B 侧 tc 网卡与 A 相同
-if [ "${SINGLE_MACHINE}" = "1" ] && [ -z "${B_TC_DEVICE}" ]; then
-    B_TC_DEVICE="${A_TC_DEVICE}"
-fi
-if [ -z "${B_TC_DEVICE}" ]; then
-    B_TC_DEVICE="${A_TC_DEVICE}"
 fi
 
 # ------------------------------------------------------------------
@@ -107,7 +97,6 @@ fi
 # ------------------------------------------------------------------
 # 导出配置给 test_performance.py
 # ------------------------------------------------------------------
-export PERF_RUN_WAN=1
 export PERF_USE_ENV_CONFIG=1
 export PERF_A_IP="${A_IP}"
 export PERF_A_RAY_PORT="${RAY_PORT}"
@@ -121,34 +110,14 @@ export PERF_B_IP="${B_EFFECTIVE_IP}"
 export PERF_B_PARTNER_SPU_PORT="${B_PARTNER_SPU_PORT}"
 export PERF_RAY_NUM_CPUS="${RAY_NUM_CPUS}"
 export PERF_RAY_OBJECT_STORE_MEMORY="${RAY_OBJECT_STORE_MEMORY}"
-
-export PERF_TC_DEVICE="${A_TC_DEVICE}"
-export PERF_WAN_CONDITIONS="${WAN_CONDITIONS}"
-
-if [ "${SINGLE_MACHINE}" = "1" ]; then
-    export PERF_WAN_TC_REMOTE_HOST=""
-    export PERF_WAN_TC_REMOTE_PORT=""
-    export PERF_WAN_TC_REMOTE_USER=""
-    export PERF_WAN_TC_REMOTE_KEY=""
-    export PERF_WAN_TC_REMOTE_PASSWORD=""
-    export PERF_WAN_TC_REMOTE_DEVICE=""
-else
-    export PERF_WAN_TC_REMOTE_HOST="${B_PUBLIC_IP}"
-    export PERF_WAN_TC_REMOTE_PORT="22"
-    export PERF_WAN_TC_REMOTE_USER="${B_SSH_USER}"
-    export PERF_WAN_TC_REMOTE_KEY=""
-    export PERF_WAN_TC_REMOTE_PASSWORD="${B_SSH_PASSWORD}"
-    export PERF_WAN_TC_REMOTE_DEVICE="${B_TC_DEVICE}"
-fi
+export PERF_STRESS_SAMPLES="${STRESS_SAMPLES}"
 
 # ------------------------------------------------------------------
 # 清理 (A 本地 + B 远程)
 # ------------------------------------------------------------------
 cleanup() {
     echo "=== 清理 ==="
-    sudo tc qdisc del dev "${A_TC_DEVICE}" root 2>/dev/null || true
     if [ "${SINGLE_MACHINE}" = "0" ]; then
-        _ssh_b "sudo tc qdisc del dev ${B_TC_DEVICE} root" 2>/dev/null || true
         _ssh_b "ray stop --force" 2>/dev/null || true
     fi
     conda run -n "${CONDA_ENV}" ray stop --force 2>/dev/null || true
@@ -158,7 +127,7 @@ trap cleanup EXIT
 # ------------------------------------------------------------------
 # Step 1: A 启动 Ray Head
 # ------------------------------------------------------------------
-echo "[1/4] A 启动 Ray Head..."
+echo "[1/3] A 启动 Ray Head..."
 
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
 export RAY_memory_monitor_refresh_ms="${RAY_memory_monitor_refresh_ms:-0}"
@@ -180,7 +149,7 @@ conda run -n "${CONDA_ENV}" ray start --head \
 # Step 2: B 启动 Partner Worker
 # ------------------------------------------------------------------
 if [ "${SINGLE_MACHINE}" = "1" ]; then
-    echo "[2/4] B 启动 Partner Worker (本机退化)..."
+    echo "[2/3] B 启动 Partner Worker (本机退化)..."
     conda run -n "${CONDA_ENV}" ray start \
         --address="${A_IP}:${RAY_PORT}" \
         --node-ip-address="${A_IP}" \
@@ -192,7 +161,7 @@ if [ "${SINGLE_MACHINE}" = "1" ]; then
         --min-worker-port="${B_MIN_WORKER_PORT}" \
         --max-worker-port="${B_MAX_WORKER_PORT}"
 else
-    echo "[2/4] B 启动 Partner Worker (SSH ${B_SSH_USER}@${B_PUBLIC_IP})..."
+    echo "[2/3] B 启动 Partner Worker (SSH ${B_SSH_USER}@${B_PUBLIC_IP})..."
     _ssh_b "ray stop --force" 2>/dev/null || true
     _ssh_b "
         export RAY_memory_usage_threshold=0.99
@@ -211,9 +180,8 @@ else
 fi
 
 # ------------------------------------------------------------------
-# Step 3: 等待 Partner Worker 上线
+# 等待 Partner Worker 上线
 # ------------------------------------------------------------------
-echo "[3/4] 等待 Partner Worker 上线..."
 for i in $(seq 1 30); do
     if conda run -n "${CONDA_ENV}" ray status --address="${A_IP}:${RAY_PORT}" 2>/dev/null | grep -q partner; then
         echo "Partner Worker 在线."
@@ -227,9 +195,9 @@ if ! conda run -n "${CONDA_ENV}" ray status --address="${A_IP}:${RAY_PORT}" 2>/d
 fi
 
 # ------------------------------------------------------------------
-# Step 4: 运行 WAN 性能测试
+# Step 3: 运行压力测试
 # ------------------------------------------------------------------
-echo "[4/4] 运行 WAN 性能测试..."
+echo "[3/3] 运行压力测试..."
 echo "======================================"
 echo " A:                  ${A_IP}"
 if [ "${SINGLE_MACHINE}" = "1" ]; then
@@ -237,11 +205,8 @@ if [ "${SINGLE_MACHINE}" = "1" ]; then
 else
     echo " B:                  ${B_PUBLIC_IP}"
 fi
-echo " A tc device:        ${A_TC_DEVICE}"
-if [ "${SINGLE_MACHINE}" = "0" ]; then
-    echo " B tc device:        ${B_TC_DEVICE}"
-fi
-echo " WAN conditions:     ${WAN_CONDITIONS}"
+echo " 样本量:             ${STRESS_SAMPLES}"
+echo " 测试项:             ${STRESS_TEST_FILTER}"
 echo " Conda env:          ${CONDA_ENV}"
 echo "======================================"
 
@@ -253,12 +218,12 @@ if conda run -n "${CONDA_ENV}" pytest --help 2>/dev/null | grep -q -- "--timeout
 fi
 
 conda run -n "${CONDA_ENV}" pytest "${PYTEST_TARGET}" \
-    -m "performance and wan and not slow" \
+    -m "performance and slow" \
     "${PYTEST_TIMEOUT_ARGS[@]}" \
     -rs "$@"
 
 echo ""
-echo "[完成] WAN 性能测试完成。"
-echo "结果: test_results/performance/psi_network_impact_wan.csv"
-echo "      test_results/performance/sslr_network_impact_wan.csv"
-echo "      test_results/performance/xgboost_network_impact_wan.csv"
+echo "[完成] 压力测试完成。"
+echo "结果: test_results/performance/psi_stress.csv"
+echo "      test_results/performance/sslr_stress.csv"
+echo "      test_results/performance/xgboost_stress.csv"

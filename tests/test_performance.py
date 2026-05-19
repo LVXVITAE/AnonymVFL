@@ -24,18 +24,67 @@
 """
 import os
 import subprocess
+import threading
 import time
-import tracemalloc
 import pytest
+import psutil
 import yaml
 import numpy as np
 import secretflow as sf
 from secretflow.data.ndarray import load, PartitionWay
 
+class _PeakMemMonitor:
+    """通过轮询系统可用内存，记录任务期间额外消耗的内存峰值.
+
+    start() 时快照 available 作为基线，任务期间持续轮询，
+    峰值 = (基线available - 期间最小available)，
+    即测试额外占用的内存（排除系统常驻进程基线）。
+    比逐进程统计更轻量，能覆盖 Ray/SPU/HEU 等独立进程。
+    """
+
+    def __init__(self, interval=0.1):
+        self.interval = interval
+        self._event = threading.Event()
+        self._baseline_available = 0
+        self._min_available = 0
+        self._thread = None
+
+    def start(self):
+        self._event.clear()
+        self._baseline_available = psutil.virtual_memory().available
+        self._min_available = self._baseline_available
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._event.set()
+        if self._thread:
+            self._thread.join(timeout=self.interval * 3)
+        return self._baseline_available - self._min_available
+
+    def _poll(self):
+        while not self._event.is_set():
+            available = psutil.virtual_memory().available
+            if available < self._min_available:
+                self._min_available = available
+            self._event.wait(self.interval)
+
+
+_peak_mem_monitor = _PeakMemMonitor()
+
+
+def _start_peak_mem_monitor():
+    _peak_mem_monitor.start()
+
+
+def _stop_peak_mem_monitor():
+    return _peak_mem_monitor.stop()
+
 _TC_DEVICE = os.getenv("PERF_TC_DEVICE", "lo")
 _TC_REMOTE_HOST = os.getenv("PERF_WAN_TC_REMOTE_HOST", "")
 _TC_REMOTE_PORT = os.getenv("PERF_WAN_TC_REMOTE_PORT", "22")
 _TC_REMOTE_USER = os.getenv("PERF_WAN_TC_REMOTE_USER", "")
+_TC_REMOTE_PASSWORD = os.getenv("PERF_WAN_TC_REMOTE_PASSWORD", "")
 _TC_REMOTE_DEVICE = os.getenv("PERF_WAN_TC_REMOTE_DEVICE", "eth0")
 _TC_REMOTE_KEY = os.getenv("PERF_WAN_TC_REMOTE_KEY", "")
 
@@ -90,7 +139,7 @@ def _run_with_comm_measure(task):
     return result, elapsed, max(0, tx1 - tx0), max(0, rx1 - rx0)
 
 pytestmark = pytest.mark.performance
-STRESS_SAMPLES = int(os.getenv("PERF_STRESS_SAMPLES", "300000"))
+STRESS_SAMPLES = int(os.getenv("PERF_STRESS_SAMPLES", "1000000"))
 WAN_CONDITIONS = os.getenv("PERF_WAN_CONDITIONS", "10:0,10:20,10:40,30:0,30:20,30:40,50:0,50:20,50:40")
 
 # ---------------------------------------------------------------------------
@@ -182,7 +231,9 @@ def _apply_tc_remote(bandwidth_mb_s: float, latency_ms: int):
         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
         "-p", _TC_REMOTE_PORT,
     ]
-    if _TC_REMOTE_KEY:
+    if _TC_REMOTE_PASSWORD:
+        ssh_args = ["sshpass", "-p", _TC_REMOTE_PASSWORD] + ssh_args
+    elif _TC_REMOTE_KEY:
         ssh_args += ["-i", _TC_REMOTE_KEY]
     ssh_args += [f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}", cmd]
     subprocess.run(ssh_args, check=True, timeout=10)
@@ -205,7 +256,9 @@ def _clear_tc_remote():
         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
         "-p", _TC_REMOTE_PORT,
     ]
-    if _TC_REMOTE_KEY:
+    if _TC_REMOTE_PASSWORD:
+        ssh_args = ["sshpass", "-p", _TC_REMOTE_PASSWORD] + ssh_args
+    elif _TC_REMOTE_KEY:
         ssh_args += ["-i", _TC_REMOTE_KEY]
     ssh_args += [f"{_TC_REMOTE_USER}@{_TC_REMOTE_HOST}",
                  f"sudo tc qdisc del dev {_TC_REMOTE_DEVICE} root"]
@@ -258,7 +311,14 @@ def _build_cluster_def(cfg):
                 "listen_addr": f"0.0.0.0:{a['coordinator_spu_port']}",
             },
         ],
-        "runtime_config": {"protocol": 3, "field": 3},
+        "runtime_config": {
+            "protocol": 3,
+            "field": 3,
+            "max_concurrency": 8,
+            "experimental_enable_inter_op_par": True,
+            "experimental_enable_intra_op_par": True,
+            "experimental_inter_op_concurrency": 8,
+        },
     }
     return cluster_def
 
@@ -284,7 +344,7 @@ def distributed_env():
     if is_placeholder:
         pytest.skip(
             "distributed_config.yaml 中 IP 为占位符, 请配置实际 IP 后运行性能测试. "
-            "如需单机退化测试, 将两个 IP 均设为 127.0.0.1"
+            "单机退化测试请将脚本中 B_PUBLIC_IP 设为本机 IP (自动检测进入单机模式)"
         )
 
     try:
@@ -298,13 +358,25 @@ def distributed_env():
     # Ensure Ray workers can import company/ and root modules.
     company_dir = os.path.join(os.path.dirname(TESTS_DIR), "company")
     project_root = os.path.dirname(TESTS_DIR)
-    runtime_env = {"env_vars": {"PYTHONPATH": company_dir + os.pathsep + project_root}}
+    runtime_env = {
+        "env_vars": {
+            "PYTHONPATH": company_dir + os.pathsep + project_root,
+            "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=true",
+            "OMP_NUM_THREADS": "8",
+        },
+    }
 
     mpc = MPCInitializer(
         mode='multi_distributed',
         ray_head_addr=ray_addr,
         cluster_def=cluster_def,
         runtime_env=runtime_env,
+        link_desc={
+            "recv_timeout_ms": 600000,
+            "http_timeout_ms": 600000,
+            "throttle_window_size": 256,
+            "http_max_payload_size": 64 * 1024 * 1024,
+        },
     )
 
     env = type("Env", (), {
@@ -430,7 +502,7 @@ class TestPSIScalability:
         partner_data = partner(
             lambda k, f: (k, f, None))(partner_keys, partner_features)
 
-        tracemalloc.start()
+        _start_peak_mem_monitor()
 
         def _task():
             R_cI, R_pI, _ = private_set_intersection(
@@ -441,8 +513,7 @@ class TestPSIScalability:
             sf.reveal(R_pI)
 
         _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(_task)
-        _, peak_mem = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+        peak_mem = _stop_peak_mem_monitor()
 
         record = {
             "样本数量": n_samples,
@@ -719,7 +790,8 @@ class TestLRInferenceLatency:
             partition_way=PartitionWay.VERTICAL,
         )
 
-        # 推理计时 + 通信量统计
+        trained_sslr.predict(test_X, company)
+
         _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
             lambda: trained_sslr.predict(test_X, company)
         )
@@ -867,6 +939,8 @@ class TestXGBoostInferenceLatency:
             partition_way=PartitionWay.VERTICAL,
         )
 
+        trained_xgb.predict(test_X, company)
+
         _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
             lambda: trained_xgb.predict(test_X, company)
         )
@@ -972,7 +1046,7 @@ class TestWANNetworkImpact:
         company_data = company(lambda k, f: (k, f, None))(company_keys, company_features)
         partner_data = partner(lambda k, f: (k, f, None))(partner_keys, partner_features)
 
-        tracemalloc.start()
+        _start_peak_mem_monitor()
 
         def _task():
             R_cI, R_pI, _ = private_set_intersection(
@@ -982,8 +1056,7 @@ class TestWANNetworkImpact:
             sf.reveal(R_pI)
 
         _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(_task)
-        _, peak_mem = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+        peak_mem = _stop_peak_mem_monitor()
 
         record = {
             **self._condition_record(wan_condition),
@@ -1200,7 +1273,7 @@ class TestStress:
         partner_data = partner(
             lambda k, f: (k, f, None))(partner_keys, partner_features)
 
-        tracemalloc.start()
+        _start_peak_mem_monitor()
 
         def _task():
             R_cI, R_pI, _ = private_set_intersection(
@@ -1210,8 +1283,7 @@ class TestStress:
             sf.reveal(R_pI)
 
         _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(_task)
-        _, peak_mem = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+        peak_mem = _stop_peak_mem_monitor()
 
         record = {
             "测试": "PSI-Stress",
@@ -1238,10 +1310,10 @@ class TestStress:
         train_y = sf.to(company, y.astype(np.float32)).to(spu)
 
         model = SSLR(perf_devices, approx=True)
-        batch_size = 8192
-        n_epochs = 1
+        batch_size = 128
+        n_epochs = 3
 
-        tracemalloc.start()
+        _start_peak_mem_monitor()
         _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
             lambda: model.fit(
                 train_X,
@@ -1253,8 +1325,7 @@ class TestStress:
                 split_col=self.SPLIT_COL,
             )
         )
-        _, peak_mem = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+        peak_mem = _stop_peak_mem_monitor()
 
         record = {
             "测试": "SSLR-Stress",
@@ -1280,9 +1351,9 @@ class TestStress:
         spu = perf_devices["spu"]
 
         X, y = _gen_data(self.N_SAMPLES, n_features=self.N_FEATURES, seed=2028)
-        k_quantiles = 10
-        n_estimators = 1
-        max_depth = 2
+        k_quantiles = 100
+        n_estimators = 3
+        max_depth = 3
 
         Q1, _, bl1 = quantize_buckets(X[:, :self.SPLIT_COL], k=k_quantiles)
         Q2, _, bl2 = quantize_buckets(X[:, self.SPLIT_COL:], k=k_quantiles)
@@ -1300,12 +1371,11 @@ class TestStress:
             max_depth=max_depth,
         )
 
-        tracemalloc.start()
+        _start_peak_mem_monitor()
         _, elapsed, tx_bytes, rx_bytes = _run_with_comm_measure(
             lambda: model.fit(train_X, train_y, buckets, FedQuantiles)
         )
-        _, peak_mem = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+        peak_mem = _stop_peak_mem_monitor()
 
         record = {
             "测试": "SSXGBoost-Stress",
