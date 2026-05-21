@@ -76,32 +76,21 @@ def main():
                               os.path.join(RESULTS_DIR, "quantile_impact.png"),
                               x_key="分位点数量k", y_key="总训练时间(s)")
 
-    # 8. psi_stress
-    print("[8/11] PSI stress")
-    records = _read("psi_stress.csv")
-    if records:
-        plot_time_vs_samples(records, "PSI 压力测试: 对齐时间 vs 样本数量",
-                              os.path.join(RESULTS_DIR, "psi_stress.png"),
-                              x_key="样本数量", y_key="对齐时间(s)")
+    # 8. WAN inference impact
+    print("[8/11] WAN inference impact plots")
+    for model, csv_name, y_key, title in [
+        ("sslr", "sslr_inference_wan.csv", "推理延迟(s)", "WAN 条件对 SSLR 推理时间的影响"),
+        ("xgboost", "xgboost_inference_wan.csv", "推理延迟(s)", "WAN 条件对 SSXGBoost 推理时间的影响"),
+    ]:
+        records = _read(csv_name)
+        if records:
+            png_name = f"{model}_inference_wan.png"
+            plot_wan_network_impact(records, title,
+                                     os.path.join(RESULTS_DIR, png_name), y_key,
+                                     y_label="推理时间(s)")
 
-    # 9. sslr_stress
-    print("[9/11] SSLR stress")
-    records = _read("sslr_stress.csv")
-    if records:
-        plot_time_vs_samples(records, "SSLR 压力测试: 训练时间 vs 样本数量",
-                              os.path.join(RESULTS_DIR, "sslr_stress.png"),
-                              x_key="样本数量", y_key="总时间(s)")
-
-    # 10. xgboost_stress
-    print("[10/11] SSXGBoost stress")
-    records = _read("xgboost_stress.csv")
-    if records:
-        plot_time_vs_samples(records, "SSXGBoost 压力测试: 训练时间 vs 样本数量",
-                              os.path.join(RESULTS_DIR, "xgboost_stress.png"),
-                              x_key="样本数量", y_key="总时间(s)")
-
-    # 11. WAN network impact
-    print("[11/11] WAN network impact plots")
+    # 9. WAN network impact
+    print("[9/11] WAN network impact plots")
     for model, csv_name, y_key, title in [
         ("psi", "psi_network_impact_wan.csv", "对齐时间(s)", "WAN 条件对 PSI 对齐时间的影响"),
         ("sslr", "sslr_network_impact_wan.csv", "总时间(s)", "WAN 条件对 SSLR 训练时间的影响"),

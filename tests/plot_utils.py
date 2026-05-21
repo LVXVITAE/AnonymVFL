@@ -10,7 +10,7 @@ matplotlib.use("Agg")  # non-interactive backend
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 
-_CJK_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+_CJK_FONT_PATH = "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
 if os.path.exists(_CJK_FONT_PATH):
     fm.fontManager.addfont(_CJK_FONT_PATH)
 
@@ -21,7 +21,7 @@ plt.rcParams.update({
     "figure.figsize": (10, 6),
 })
 if os.path.exists(_CJK_FONT_PATH):
-    plt.rcParams["font.sans-serif"] = ["Noto Sans CJK JP"] + plt.rcParams.get("font.sans-serif", [])
+    plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei"] + plt.rcParams.get("font.sans-serif", [])
 plt.rcParams["axes.unicode_minus"] = False
 
 def save_performance_table(records: list[dict], csv_path: str):
@@ -120,14 +120,14 @@ def plot_inference_latency(records: list[dict], png_path: str,
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
 
     # --- Top subplot: 总延迟 + 总通信量 ---
-    ax_top.set_ylabel("推理延迟 (s)", color=color1)
+    ax_top.set_ylabel("推理时间 (s)", color=color1)
     l1, = ax_top.plot(df["样本数量"], df["推理延迟(s)"], marker="o", color=color1,
                       linewidth=2, label="总延迟")
     ax_top.tick_params(axis="y", labelcolor=color1)
-    ax_top.set_title("推理延迟与通信量")
+    ax_top.set_title("推理时间与通信量")
     ax_top.grid(True, alpha=0.3)
 
-    top_lines, top_labels = [l1], ["总延迟"]
+    top_lines, top_labels = [l1], ["总时间"]
     if has_comm:
         ax_top2 = ax_top.twinx()
         ax_top2.set_ylabel(comm_key, color=color3)
@@ -140,11 +140,11 @@ def plot_inference_latency(records: list[dict], png_path: str,
 
     # --- Bottom subplot: 单样本延迟 ---
     ax_bot.set_xlabel("样本数量")
-    ax_bot.set_ylabel("单样本平均延迟 (ms)", color=color2)
+    ax_bot.set_ylabel("单样本平均推理时间 (ms)", color=color2)
     ax_bot.plot(df["样本数量"], df["单样本平均延迟(ms)"], marker="s", color=color2,
-                linewidth=2, label="单样本延迟")
+                linewidth=2, label="单样本推理时间")
     ax_bot.tick_params(axis="y", labelcolor=color2)
-    ax_bot.set_title("单样本平均推理延迟")
+    ax_bot.set_title("单样本平均推理时间")
     ax_bot.grid(True, alpha=0.3)
     ax_bot.legend(loc="upper right", fontsize=9)
 
@@ -155,7 +155,8 @@ def plot_inference_latency(records: list[dict], png_path: str,
 
 
 def plot_wan_network_impact(records: list[dict], title: str, png_path: str,
-                            y_key: str, comm_key: str = "总通信量(MB)"):
+                            y_key: str, comm_key: str = "总通信量(MB)",
+                            y_label: str | None = None):
     """Side-by-side subplots: left = bandwidth impact (fixed latency=0),
     right = latency impact (fixed bandwidth=baseline).
 
@@ -165,6 +166,7 @@ def plot_wan_network_impact(records: list[dict], title: str, png_path: str,
       - Bandwidth series has latency=0 with varying bandwidth.
       - Latency series has a fixed high bandwidth with varying latency.
     """
+    display_label = y_label if y_label is not None else y_key
     df = pd.DataFrame(records).sort_values(["延迟(ms)", "带宽限制(Mb/s)"])
 
     bw_df = df[df["延迟(ms)"] == 0].sort_values("带宽限制(Mb/s)")
@@ -175,7 +177,7 @@ def plot_wan_network_impact(records: list[dict], title: str, png_path: str,
 
     has_comm = comm_key in df.columns
 
-    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(14, 6))
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10, 10))
 
     all_y = pd.concat([bw_df[y_key], lat_df[y_key]])
     y_min, y_max = all_y.min(), all_y.max()
@@ -190,57 +192,57 @@ def plot_wan_network_impact(records: list[dict], title: str, png_path: str,
         c_lo = max(0, c_min - c_pad)
         c_hi = c_max + c_pad
 
-    # --- Left: bandwidth impact ---
+    # --- Top: bandwidth impact ---
     if len(bw_df) > 0:
-        ax_left.plot(bw_df["带宽限制(Mb/s)"], bw_df[y_key],
-                     marker="o", linewidth=2, color=color_time, label=y_key)
+        ax_top.plot(bw_df["带宽限制(Mb/s)"], bw_df[y_key],
+                     marker="o", linewidth=2, color=color_time, label=display_label)
         if has_comm:
-            ax_left2 = ax_left.twinx()
-            ax_left2.plot(bw_df["带宽限制(Mb/s)"], bw_df[comm_key],
+            ax_top2 = ax_top.twinx()
+            ax_top2.plot(bw_df["带宽限制(Mb/s)"], bw_df[comm_key],
                           marker="s", linewidth=2, linestyle="--",
                           color=color_comm, label=comm_key)
-            ax_left2.set_ylabel(comm_key, color=color_comm)
-            ax_left2.set_ylim(c_lo, c_hi)
-            ax_left2.tick_params(axis="y", labelcolor=color_comm)
-    ax_left.set_xlabel("带宽 (Mb/s)")
-    ax_left.set_ylabel(y_key, color=color_time)
-    ax_left.tick_params(axis="y", labelcolor=color_time)
-    ax_left.set_ylim(y_lo, y_hi)
-    ax_left.set_title("带宽影响 (延迟=0)")
-    ax_left.grid(True, alpha=0.3)
+            ax_top2.set_ylabel(comm_key, color=color_comm)
+            ax_top2.set_ylim(c_lo, c_hi)
+            ax_top2.tick_params(axis="y", labelcolor=color_comm)
+    ax_top.set_xlabel("带宽 (Mb/s)")
+    ax_top.set_ylabel(display_label, color=color_time)
+    ax_top.tick_params(axis="y", labelcolor=color_time)
+    ax_top.set_ylim(y_lo, y_hi)
+    ax_top.set_title("带宽影响 (延迟=0)")
+    ax_top.grid(True, alpha=0.3)
 
     if len(bw_df) > 0 and has_comm:
-        lines1, labels1 = ax_left.get_legend_handles_labels()
-        lines2, labels2 = ax_left2.get_legend_handles_labels()
-        ax_left.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=9)
+        lines1, labels1 = ax_top.get_legend_handles_labels()
+        lines2, labels2 = ax_top2.get_legend_handles_labels()
+        ax_top.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=9)
     elif len(bw_df) > 0:
-        ax_left.legend(loc="upper right", fontsize=9)
+        ax_top.legend(loc="upper right", fontsize=9)
 
-    # --- Right: latency impact ---
+    # --- Bottom: latency impact ---
     if len(lat_df) > 0:
-        ax_right.plot(lat_df["延迟(ms)"], lat_df[y_key],
-                      marker="o", linewidth=2, color=color_time, label=y_key)
+        ax_bot.plot(lat_df["延迟(ms)"], lat_df[y_key],
+                      marker="o", linewidth=2, color=color_time, label=display_label)
         if has_comm:
-            ax_right2 = ax_right.twinx()
-            ax_right2.plot(lat_df["延迟(ms)"], lat_df[comm_key],
+            ax_bot2 = ax_bot.twinx()
+            ax_bot2.plot(lat_df["延迟(ms)"], lat_df[comm_key],
                            marker="s", linewidth=2, linestyle="--",
                            color=color_comm, label=comm_key)
-            ax_right2.set_ylabel(comm_key, color=color_comm)
-            ax_right2.set_ylim(c_lo, c_hi)
-            ax_right2.tick_params(axis="y", labelcolor=color_comm)
-    ax_right.set_xlabel("延迟 (ms)")
-    ax_right.set_ylabel(y_key, color=color_time)
-    ax_right.tick_params(axis="y", labelcolor=color_time)
-    ax_right.set_ylim(y_lo, y_hi)
-    ax_right.set_title(f"延迟影响 (带宽={int(lat_df['带宽限制(Mb/s)'].iloc[0]) if len(lat_df) > 0 else '-'}Mb/s)")
-    ax_right.grid(True, alpha=0.3)
+            ax_bot2.set_ylabel(comm_key, color=color_comm)
+            ax_bot2.set_ylim(c_lo, c_hi)
+            ax_bot2.tick_params(axis="y", labelcolor=color_comm)
+    ax_bot.set_xlabel("延迟 (ms)")
+    ax_bot.set_ylabel(display_label, color=color_time)
+    ax_bot.tick_params(axis="y", labelcolor=color_time)
+    ax_bot.set_ylim(y_lo, y_hi)
+    ax_bot.set_title(f"延迟影响 (带宽={int(lat_df['带宽限制(Mb/s)'].iloc[0]) if len(lat_df) > 0 else '-'}Mb/s)")
+    ax_bot.grid(True, alpha=0.3)
 
     if len(lat_df) > 0 and has_comm:
-        lines1, labels1 = ax_right.get_legend_handles_labels()
-        lines2, labels2 = ax_right2.get_legend_handles_labels()
-        ax_right.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=9)
+        lines1, labels1 = ax_bot.get_legend_handles_labels()
+        lines2, labels2 = ax_bot2.get_legend_handles_labels()
+        ax_bot.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=9)
     elif len(lat_df) > 0:
-        ax_right.legend(loc="upper left", fontsize=9)
+        ax_bot.legend(loc="upper left", fontsize=9)
 
     fig.suptitle(title, fontsize=14, y=1.02)
     fig.tight_layout()
