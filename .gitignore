@@ -9,6 +9,7 @@ venv/
 .venv/
 .env
 .env.*
+*.pyc
 
 # Logs
 *.log
