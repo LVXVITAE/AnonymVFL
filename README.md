@@ -39,6 +39,13 @@ AnonymVFL 是一个基于 [SecretFlow](https://github.com/secretflow/secretflow)
 - 回归指标：MSE、R²
 - 基线：sklearn LogisticRegression、XGBClassifier/XGBRegressor
 
+### 数据集
+
+- [Breast Cancer Wisconsin (Diagnostic)](https://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+(Diagnostic))：威斯康星乳腺癌诊断数据集，包含 569 个样本、30 个特征，用于二分类（恶性/良性肿瘤预测），由 Dr. William H. Wolberg 等人创建。
+- California Housing：加州房价数据集，包含 20,640 个样本、8 个特征（如收入、房龄、地理位置等），用于回归任务，原始数据来自 Pace & Barry (1997) 及 1990 年美国人口普查。实验中通过 sklearn 的 fetch_california_housing 加载。
+- [Gisette](https://archive.ics.uci.edu/ml/datasets/Gisette)：高维二分类数据集，包含 5,000 个特征，任务是区分手写数字 4 和 9，源自 NIPS 2003 Feature Selection Challenge。
+- [Adult (Census Income)](https://archive.ics.uci.edu/ml/datasets/Adult)：人口普查收入数据集，任务是根据人口统计信息预测年收入是否超过 50K 美元，由 Barry Becker 从 1994 年美国人口普查数据库中提取。
+
 ### 实验结果
 
 **Breast Cancer Wisconsin（二分类）：**
